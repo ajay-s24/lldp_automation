@@ -43,6 +43,6 @@ The script will prompt you to enter:
 - compare_lldp_before_after(): Compares pre/post-reboot LLDP states using difflib.
 - get_cable_length_from_switch(): Queries Juniper switch for cable length if ethtool fails.
 - lldp_interface_exists(): Verifies if interface has LLDP data.
-- test_lldp_link_down_up(): Tests LLDP behavior for interface with physical link check
+- test_lldp_link_down_up(): Validates LLDP neighbor disappearance/reappearance on interface admin down/up and ensures physical link is detected.
 
 
