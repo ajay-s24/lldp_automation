@@ -1,0 +1,21 @@
+servers:
+  - name: svl-d-ai-srv01
+    username: root
+    password: Embe1mpls
+
+  - name: svl-d-ai-srv02
+    username: root
+    password: Embe1mpls
+
+  - name: svl-d-ai-srv03
+    username: root
+    password: Embe1mpls
+
+  - name: svl-d-ai-srv04
+    username: root
+    password: Embe1mpls
+
+switches:
+  - name: ny-q5230-04
+    username: root
+    password: Embe1mpls
