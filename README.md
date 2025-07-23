@@ -45,4 +45,93 @@ The script will prompt you to enter:
 - lldp_interface_exists(): Verifies if interface has LLDP data.
 - test_lldp_link_down_up(): Validates LLDP neighbor disappearance/reappearance on interface admin down/up and ensures physical link is detected.
 
+## Example Output
 
+NIC String from config: 'Broadcom Inc. and subsidiaries'
+Enter server hostname (or IP): svl-d-ai-srv01
+Enter server username: root
+Enter server password: 
+Enter NIC match string (default 'Broadcom Inc. and subsidiaries'): 
+Found interfaces and IPs:
+enp13s0np0: 10.200.3.27
+enp55s0np0: 10.200.10.27
+enp181s0np0: 10.200.10.20
+Multiple interfaces found. Select one:
+1: enp13s0np0 (10.200.3.27)
+2: enp55s0np0 (10.200.10.27)
+3: enp181s0np0 (10.200.10.20)
+Enter choice number: 2
+Selected device: enp55s0np0
+
+Running link down/up test on interface: enp55s0np0
+Testing LLDP behavior for interface 'enp55s0np0'
+
+Initial physical link status: UP
+Interfaces found: ['eno8303', 'enp13s0np0', 'enp55s0np0', 'enp181s0np0']
+PASS: Interface enp55s0np0 found in LLDP neighbors initially.
+Bringing interface enp55s0np0 DOWN...
+PASS: Interface enp55s0np0 correctly absent from LLDP neighbors after link down.
+Bringing interface enp55s0np0 UP...
+Waiting for interface enp55s0np0 to appear in LLDP neighbors. Will timeout after 30 seconds.
+PASS: Interface enp55s0np0 found in LLDP neighbors after link up.
+Overall test: PASSED.
+
+Switch management IP: 10.83.6.101
+Local NIC MAC: 9c:5a:80:dd:c2:d9
+Connected switch info for enp55s0np0:
+ny-q5230-04.englab.juniper.net:
+  Interface: enp55s0np0
+  PortDescr: ny-q5130-04-et-0/0/2-enp13s0np0-svl-d-ai-srv01
+  PortId: local 508
+Cable assembly length for enp55s0np0: 2.00m
+Saving LLDP data before reboot...
+Reboot the server before LLDP comparison? (y/n): n
+asaravanan@JNPR-MAC-T4KR7F ~ % python3 ~/Downloads/lldp_automation_folder/lldp_automation.py
+NIC String from config: 'Broadcom Inc. and subsidiaries'
+Enter server hostname (or IP): svl-d-ai-srv01
+Enter server username: root
+Enter server password: 
+Enter NIC match string (default 'Broadcom Inc. and subsidiaries'): 
+Found interfaces and IPs:
+enp13s0np0: 10.200.3.27
+enp55s0np0: 10.200.10.27
+enp181s0np0: 10.200.10.20
+Multiple interfaces found. Select one:
+1: enp13s0np0 (10.200.3.27)
+2: enp55s0np0 (10.200.10.27)
+3: enp181s0np0 (10.200.10.20)
+Enter choice number: 2
+Selected device: enp55s0np0
+
+Running link down/up test on interface: enp55s0np0
+Testing LLDP behavior for interface 'enp55s0np0'
+
+Initial physical link status: UP
+Interfaces found: ['eno8303', 'enp13s0np0', 'enp55s0np0', 'enp181s0np0']
+PASS: Interface enp55s0np0 found in LLDP neighbors initially.
+Bringing interface enp55s0np0 DOWN...
+PASS: Interface enp55s0np0 correctly absent from LLDP neighbors after link down.
+Bringing interface enp55s0np0 UP...
+Waiting for interface enp55s0np0 to appear in LLDP neighbors. Will timeout after 30 seconds.
+PASS: Interface enp55s0np0 found in LLDP neighbors after link up.
+Overall test: PASSED.
+
+Switch management IP: 10.83.6.101
+Local NIC MAC: 9c:5a:80:dd:c2:d9
+Connected switch info for enp55s0np0:
+ny-q5230-04.englab.juniper.net:
+  Interface: enp55s0np0
+  PortDescr: ny-q5130-04-et-0/0/2-enp13s0np0-svl-d-ai-srv01
+  PortId: local 508
+Cable assembly length for enp55s0np0: 2.00m
+Saving LLDP data before reboot...
+Reboot the server before LLDP comparison? (y/n): y
+
+Rebooting server svl-d-ai-srv01...
+Reboot command issued successfully (SSH session may close automatically).
+Waiting for svl-d-ai-srv01 to become available after reboot...
+Server is back online.
+Waiting 30 seconds for LLDP info to populate after reboot...
+Trying to retrieve LLDP data after reboot with retries...
+LLDP data retrieved successfully.
+LLDP data matches before and after reboot (ignoring 'age').
