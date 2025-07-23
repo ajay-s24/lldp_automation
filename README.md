@@ -47,7 +47,7 @@ The script will prompt you to enter:
 
 ## Example Output
 
-NIC String from config: 'Broadcom Inc. and subsidiaries'
+`NIC String from config: 'Broadcom Inc. and subsidiaries'
 Enter server hostname (or IP): svl-d-ai-srv01
 Enter server username: root
 Enter server password: 
