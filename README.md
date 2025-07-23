@@ -31,3 +31,18 @@ The script will prompt you to enter:
 4. If multiple interfaces match, select which interface to test
 5. Switch hostname/IP and SSH credentials (only if cable length via `ethtool` is unavailable)
 6. Whether to reboot the server for LLDP consistency testing
+
+## Major Functions
+
+- read_config(): Loads NIC string config from nic_config.json.
+- ssh_connect(): Connects to a remote server via SSH using Paramiko.
+- get_interfaces_and_ips: Extracts IP address of a given network interface.
+- run_ssh_command: Executes a command on a remote host over SSH and captures output.
+- get_cable_length_ssh(): Tries to get cable length using ethtool -m.
+- get_lldp_neighbors_local_ssh() / get_lldp_neighbors_summary_ssh(): Gathers LLDP info before/after reboot.
+- compare_lldp_before_after(): Compares pre/post-reboot LLDP states using difflib.
+- get_cable_length_from_switch(): Queries Juniper switch for cable length if ethtool fails.
+- lldp_interface_exists(): Verifies if interface has LLDP data.
+- test_lldp_link_down_up(): Tests LLDP behavior for interface with physical link check
+
+
