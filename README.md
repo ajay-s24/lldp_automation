@@ -47,6 +47,7 @@ The script will prompt you to enter:
 
 ## Example Output
 
+```
 `NIC String from config: 'Broadcom Inc. and subsidiaries'
 Enter server hostname (or IP): svl-d-ai-srv01
 Enter server username: root
@@ -135,3 +136,4 @@ Waiting 30 seconds for LLDP info to populate after reboot...
 Trying to retrieve LLDP data after reboot with retries...
 LLDP data retrieved successfully.
 LLDP data matches before and after reboot (ignoring 'age').
+```
