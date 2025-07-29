@@ -1,16 +1,247 @@
 # Required Libraries
 import getpass
 import json
+import yaml
 import paramiko
-from jnpr.junos import Device
-from jnpr.junos.exception import ConnectError
 import os
 import time
 import difflib
 import re
+from jnpr.junos import Device
+from jnpr.junos.exception import ConnectError
+from lxml import etree
+
 
 # Path to local config file
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'nic_config.json')
+
+# Path to credentials file
+CREDS_PATH = os.path.join(os.path.dirname(__file__), 'creds.yaml')
+
+def run_ssh_command(host, username, password, command, suppress_ssh_errors=False):
+    """
+    Run a command on a remote host via SSH.
+
+    Args:
+        host (str): Hostname.
+        username (str): SSH username.
+        password (str): SSH password.
+        command (str): Command to execute.
+        suppress_ssh_errors (bool): If True, suppress error messages.
+
+    Returns:
+        str: Output from the command or None on failure.
+    """
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        ssh.connect(hostname=host, username=username, password=password)
+        stdin, stdout, stderr = ssh.exec_command(command)
+        output = stdout.read().decode()
+        error = stderr.read().decode()
+        ssh.close()
+
+        if error and not error.lower().startswith('warning') and not suppress_ssh_errors:
+            print(f"Error running remote command '{command}': {error.strip()}")
+
+        return output
+    except Exception as e:
+        if not suppress_ssh_errors:
+            print(f"SSH connection error: {e}")
+        return None
+    
+def get_active_interfaces(host, username, password):
+    output = run_ssh_command(host, username, password, 'cli -c "show interfaces terse | match et-"')
+    interfaces = set()
+    for line in output.splitlines():
+        match = re.match(r'^(et-\d+/\d+/\d+)', line)
+        if match:
+            interfaces.add(match.group(1))
+    return sorted(interfaces)
+
+def get_alarms(host, username, password):
+    return run_ssh_command(host, username, password, 'cli -c "show chassis alarms"')
+
+def soft_oir_on_interface(host, username, password, interface):
+    print(f"\nSimulating Soft OIR on {interface}...")
+
+    # Deactivate all related config
+    deactivate_cmds = [
+        f"deactivate interfaces {interface}",
+        f"deactivate routing-instances evpn-1 interface {interface}.0",
+        f"deactivate protocols rstp interface {interface}"
+    ]
+    for cmd in deactivate_cmds:
+        run_ssh_command(host, username, password, f'cli -c "{cmd}"')
+
+    run_ssh_command(host, username, password, 'cli -c "commit"')
+    time.sleep(2)
+
+    # Reactivate
+    activate_cmds = [
+        f"activate interfaces {interface}",
+        f"activate routing-instances evpn-1 interface {interface}.0",
+        f"activate protocols rstp interface {interface}"
+    ]
+    for cmd in activate_cmds:
+        run_ssh_command(host, username, password, f'cli -c "{cmd}"')
+
+    run_ssh_command(host, username, password, 'cli -c "commit"')
+
+def soft_oir_all_ports(host, username, password):
+    print("\nCapturing alarms before Soft OIR...")
+    alarms_before = get_alarms(host, username, password)
+
+    interfaces = get_active_interfaces(host, username, password)
+
+    for iface in interfaces:
+        soft_oir_on_interface(host, username, password, iface)
+
+    print("Capturing alarms after Soft OIR...")
+    alarms_after = get_alarms(host, username, password)
+
+    print("\n--- Alarms Before ---")
+    print(alarms_before.strip())
+
+    print("\n--- Alarms After ---")
+    print(alarms_after.strip())
+
+    if alarms_before == alarms_after:
+        print("\nNo change in alarms after Soft OIR.")
+    else:
+        print("\nAlarms changed after Soft OIR. Differences:")
+        before_lines = alarms_before.splitlines()
+        after_lines = alarms_after.splitlines()
+        diff = difflib.unified_diff(before_lines, after_lines, fromfile='Before', tofile='After', lineterm='')
+        for line in diff:
+            print(line)
+
+def select_server(servers):
+    print("Available servers:")
+    for idx, srv in enumerate(servers, 1):
+        print(f"{idx}: {srv['name']}")
+    choice = input("Select server number: ").strip()
+    if not choice.isdigit() or int(choice) < 1 or int(choice) > len(servers):
+        print("Invalid choice.")
+        return None
+    return servers[int(choice) - 1]
+
+def get_switch_creds(switches, switch_name):
+    for switch in switches:
+        if switch['name'] == switch_name:
+            return switch['username'], switch['password']
+    print(f"No credentials found for switch '{switch_name}'")
+    return None, None
+
+def get_capable_speeds_from_pic(server_ip, username, password, port_num):
+    """
+    Fetch and parse 'show chassis pic' output for the given port_num
+    to extract capable port speeds like '1x400G', '4x100G', etc.
+
+    Returns:
+        List of tuples: [(num_sub_ports, speed_per_subport), ...]
+    """
+    cmd = f"cli -c 'show chassis pic fpc-slot 0 pic-slot 0 | match \"^ *{port_num} \"'"
+    output = run_ssh_command(server_ip, username, password, cmd)
+    
+    # Example line format:
+    #  24     0       1x400G 1x200G 4x10G 1x40G 4x25G 1x100G 4x100G 2x100G 2x200G 2x50G 1x50G
+    # Extract all "NxM G" patterns (like 4x100G)
+    modes = []
+    pattern = re.compile(r'(\d+)x(\d+)G', re.IGNORECASE)
+    
+    for match in pattern.finditer(output):
+        lanes = int(match.group(1))
+        speed = int(match.group(2))
+        modes.append((lanes, speed))
+    
+    # Sort by lanes desc (prefer more sub-ports first), then speed asc
+    modes = sorted(modes, key=lambda x: (-x[0], x[1]))
+
+    return modes
+
+def test_channelization(server_ip, username, password, interface, port_num):
+    print(f"\n===== Channelization Test for {interface} =====")
+
+    # Step 1: Get original speed
+    try:
+        media_before = run_ssh_command(server_ip, username, password,
+            f"cli -c 'show interfaces {interface} media'")
+        speed_match = re.search(r'Speed: (\d+)g', media_before, re.IGNORECASE)
+        original_speed = int(speed_match.group(1)) if speed_match else None
+        if not original_speed:
+            print("Could not parse original speed, defaulting to 400")
+            original_speed = 400
+    except Exception as e:
+        print(f"Failed to get original speed: {e}")
+        original_speed = 400
+
+    # Step 2: Get supported modes from chassis PIC output for this port number
+    try:
+        modes = get_capable_speeds_from_pic(server_ip, username, password, port_num)
+        print(f"Supported channelization modes for port {port_num}: {modes}")
+    except Exception as e:
+        print(f"Failed to get capable speeds from PIC: {e}")
+        modes = []
+
+    results = {}
+
+    for lanes, speed in modes:
+        if lanes == 1 and speed == original_speed:
+            continue
+
+        mode_str = f"{lanes}x{speed}G"
+        print(f"\n--- Testing {mode_str} mode ---")
+
+        try:
+            # Apply channelization
+            cmds = [
+                f"set interfaces {interface} number-of-sub-ports {lanes}",
+                f"set interfaces {interface} speed {speed}g"
+            ]
+            channelize_cmd = "cli -c 'configure; " + " ; ".join(cmds) + " ; commit and-quit'"
+            run_ssh_command(server_ip, username, password, channelize_cmd)
+            time.sleep(10)
+
+            # Verify sub-interfaces
+            sub_intf_status = run_ssh_command(
+                server_ip, username, password,
+                f"cli -c 'show interfaces terse | match \"{interface}([^0-9]|$)\"'"
+            )
+            print("\nSub-interfaces after channelization:\n")
+            print(sub_intf_status)
+
+            # Revert to original speed
+            revert_cmds = [
+                f"delete interfaces {interface} number-of-sub-ports",
+                f"set interfaces {interface} speed {original_speed}g"
+            ]
+            dechannel_cmd = "cli -c 'configure; " + " ; ".join(revert_cmds) + " ; commit and-quit'"
+            run_ssh_command(server_ip, username, password, dechannel_cmd)
+            time.sleep(10)
+
+            results[mode_str] = "PASS"
+        except Exception as e:
+            print(f"Error during testing {mode_str} mode: {e}")
+            results[mode_str] = f"FAIL - {e}"
+
+            # Try to revert safely in case of failure
+            try:
+                revert_cmds = [
+                    f"delete interfaces {interface} number-of-sub-ports",
+                    f"set interfaces {interface} speed {original_speed}g"
+                ]
+                dechannel_cmd = "cli -c 'configure; " + " ; ".join(revert_cmds) + " ; commit and-quit'"
+                run_ssh_command(server_ip, username, password, dechannel_cmd)
+                time.sleep(10)
+            except Exception as revert_err:
+                print(f"Failed to revert interface after error: {revert_err}")
+
+    print("\n===== Channelization Test Summary =====")
+    for mode, status in results.items():
+        print(f"{mode}: {status}")
+
+    print(f"\n===== Completed Channelization Test for {interface} =====\n")
 
 def lldp_interface_exists(server_ip, username, password, interface):
     """
@@ -26,87 +257,111 @@ def lldp_interface_exists(server_ip, username, password, interface):
     interfaces = [iface.rstrip(',') for iface in re.findall(r'Interface:\s+(\S+)', output, re.IGNORECASE)]
     return interface in interfaces
 
+def is_link_up(server_ip, username, password, interface):
+    """
+    Determine whether the network interface has a physical link.
+    Uses /sys/class/net/{interface}/operstate which is widely supported.
+    """
+    output = run_ssh_command(server_ip, username, password, f"cat /sys/class/net/{interface}/operstate")
+    return output and output.strip().lower() == "up"
+
 def test_lldp_link_down_up(server_ip, username, password, interface):
     """
     Test LLDP behavior for interface with physical link check:
-    1. Check physical link is UP; if DOWN, bring it UP and verify
-    2. Verify interface is present in LLDP neighbors initially
-    3. Bring interface DOWN, check absence in LLDP neighbors
-    4. Bring interface UP, check presence in LLDP neighbors again
+    1. Ensure link is UP; if not, bring it up.
+    2. Confirm interface is in LLDP neighbors.
+    3. Bring interface DOWN and verify it's gone from LLDP neighbors.
+    4. Bring it UP again and confirm it's back in LLDP neighbors.
     """
 
-    print(f"Testing LLDP behavior for interface '{interface}'\n")
+    print(f"\n=== Testing LLDP behavior for interface '{interface}' ===\n")
 
-    # Check physical link status with ethtool
-    output = run_ssh_command(server_ip, username, password, f"ethtool {interface} | grep -i 'Link detected'")
-    link_up = False
-    if output and "yes" in output.lower():
-        print(f"Initial physical link status: UP")
-        link_up = True
+    # Step 0: Check link status
+    if is_link_up(server_ip, username, password, interface):
+        print(f"Initial physical link: UP")
     else:
-        print(f"Initial physical link status: DOWN")
-        print(f"Trying to bring interface {interface} UP...")
+        print(f"Initial physical link: DOWN – trying to bring it UP...")
         run_ssh_command(server_ip, username, password, f"ip link set dev {interface} up")
         time.sleep(3)
-        output_after_up = run_ssh_command(server_ip, username, password, f"ethtool {interface} | grep -i 'Link detected'")
-        if output_after_up and "yes" in output_after_up.lower():
-            print(f"Interface {interface} is UP after bringing it up.")
-            link_up = True
+        if is_link_up(server_ip, username, password, interface):
+            print(f"Link is UP now.")
         else:
-            print(f"FAIL: Unable to bring interface {interface} UP. Aborting LLDP test.")
+            print(f"FAIL: Couldn't bring link UP.")
             return False
 
-    # Proceed only if link is up
-    if not link_up:
-        print(f"FAIL: Physical link is down and could not be brought up.")
+    # Step 1: Check presence in LLDP neighbors
+    if wait_for_interface_in_lldp(server_ip, username, password, interface):
+        print(f"PASS: Interface {interface} found in LLDP neighbors.")
+    else:
+        print(f"FAIL: Interface {interface} NOT found in LLDP neighbors.")
         return False
 
-    # Step 1: Check interface appears in LLDP neighbors
-    interfaces = [iface.rstrip(',') for iface in re.findall(r'Interface:\s+(\S+)', run_ssh_command(server_ip, username, password, 'lldpcli show neighbors'), re.IGNORECASE)]
-    print(f"Interfaces found: {interfaces}")
-    if interface in interfaces:
-        print(f"PASS: Interface {interface} found in LLDP neighbors initially.")
-    else:
-        print(f"FAIL: Interface {interface} NOT found in LLDP neighbors initially.")
-    
-    # Step 2: Bring interface down
+    # Step 2: Bring interface DOWN
     print(f"Bringing interface {interface} DOWN...")
     run_ssh_command(server_ip, username, password, f"ip link set dev {interface} down")
-    time.sleep(3)  # small pause before checking
-
-    # Verify interface is NOT in LLDP neighbors now
-    interfaces_after_down = [iface.rstrip(',') for iface in re.findall(r'Interface:\s+(\S+)', run_ssh_command(server_ip, username, password, 'lldpcli show neighbors'), re.IGNORECASE)]
-    if interface in interfaces_after_down:
-        print(f"FAIL: Interface {interface} still present in LLDP neighbors after link down.")
+    if wait_for_interface_not_in_lldp(server_ip, username, password, interface):
+        print(f"PASS: Interface {interface} disappeared from LLDP neighbors after link down.")
+    else:
+        print(f"FAIL: Interface {interface} still present in LLDP after link down.")
+        run_ssh_command(server_ip, username, password, f"ip link set dev {interface} up")
         return False
-    print(f"PASS: Interface {interface} correctly absent from LLDP neighbors after link down.")
 
-    # Step 3: Bring interface back up
+    # Step 3: Bring interface back UP
     print(f"Bringing interface {interface} UP...")
     run_ssh_command(server_ip, username, password, f"ip link set dev {interface} up")
-    time.sleep(3)
-
-    # Wait for interface to appear again in LLDP neighbors with polling
-    if not wait_for_interface_in_lldp(server_ip, username, password, interface):
+    if wait_for_interface_in_lldp(server_ip, username, password, interface):
+        print(f"PASS: Interface {interface} reappeared in LLDP neighbors.")
+        return True
+    else:
         print(f"FAIL: Interface {interface} NOT found in LLDP neighbors after link up.")
         return False
-    print(f"PASS: Interface {interface} found in LLDP neighbors after link up.")
-
-    return True
 
 
-def wait_for_interface_in_lldp(server_ip, username, password, interface, timeout=30, interval=2):
+def wait_for_interface_in_lldp(server_ip, username, password, interface, timeout=120, interval=2):
     """
     Wait up to timeout seconds for interface to appear in lldpcli neighbors, checking every interval seconds.
     Returns True if interface is present, False if timeout reached.
     """
+    print(f"Waiting for interface {interface} to appear in LLDP neighbors. Will timeout if waiting after {timeout} seconds.")
     start = time.time()
-    print(f"Waiting for interface {interface} to appear in LLDP neighbors. Will timeout after {timeout} seconds.")
     while time.time() - start < timeout:
-        interfaces = [iface.rstrip(',') for iface in re.findall(r'Interface:\s+(\S+)', run_ssh_command(server_ip, username, password, 'lldpcli show neighbors'), re.IGNORECASE)]
+        output = run_ssh_command(server_ip, username, password, 'lldpcli show neighbors')
+        if output is None:
+            print("Warning: Failed to get LLDP output. Retrying...")
+            time.sleep(interval)
+            continue
+        interfaces = [iface.rstrip(',') for iface in re.findall(r'Interface:\s+(\S+)', output, re.IGNORECASE)]
         if interface in interfaces:
+            print(f"{interface} is present in LLDP neighbors.")
             return True
         time.sleep(interval)
+    print(f"{interface} not found after {timeout} seconds.")
+    return False
+
+def wait_for_interface_not_in_lldp(server_ip, username, password, interface, timeout=120, interval=2):
+    """
+    Wait up to timeout seconds for interface to disappear from lldpcli neighbors, checking every interval seconds.
+    Returns True if interface disappears, False if still present after timeout.
+    """
+    print(f"Waiting for interface {interface} to disappear from LLDP neighbors.  Will timeout if waiting after {timeout} seconds.")
+    start = time.time()
+    while time.time() - start < timeout:
+        output = run_ssh_command(server_ip, username, password, 'lldpcli show neighbors')
+        if output:
+            # Find all interfaces listed in LLDP output
+            matches = re.findall(r'Interface:\s+(\S+)', output, re.IGNORECASE)
+            interfaces = [iface.strip(',') for iface in matches]
+
+            if interface not in interfaces:
+                print(f"{interface} is no longer present in LLDP neighbors.")
+                return True
+        else:
+            # No LLDP output, wait and retry
+            print("Warning: No LLDP output. Retrying...")
+        
+        time.sleep(interval)
+
+    print(f"{interface} still present in LLDP neighbors after {timeout} seconds.")
     return False
 
 def read_config():
@@ -123,6 +378,19 @@ def read_config():
         print(f"Error reading config file: {e}")
         return {}
 
+def read_creds():
+    """
+    Load device credentials from a YAML file.
+
+    Returns:
+        dict: Dictionary containing server and switch credentials, or empty dict on failure.
+    """
+    try:
+        with open(CREDS_PATH) as f:
+            return yaml.safe_load(f)
+    except Exception as e:
+        print(f"Error reading credentials file: {e}")
+        return {}
 
 def run_ssh_command(host, username, password, command, suppress_ssh_errors=False):
     """
@@ -184,12 +452,12 @@ def get_lldp_neighbors_local_ssh(server_ip, username, password, interface):
         print(f"Error parsing LLDP JSON: {e}")
     return None
 
-def get_interfaces_and_ips(server_ip, username, password, nic_match_str):
+def get_interfaces_and_ips(server_hostname, username, password, nic_match_str):
     """
     Discover interfaces on a server that match a NIC string and retrieve their IPs.
 
     Args:
-        server_ip (str): Server IP.
+        server_hostname (str): Server hostname.
         username (str): SSH username.
         password (str): SSH password.
         nic_match_str (str): NIC description match string (e.g., "Broadcom Inc. and subsidiaries").
@@ -198,7 +466,7 @@ def get_interfaces_and_ips(server_ip, username, password, nic_match_str):
         dict: Mapping of interface names to IP addresses.
     """
     # Get hardware info of network devices
-    lshw_output = run_ssh_command(server_ip, username, password, 'lshw -C network -businfo')
+    lshw_output = run_ssh_command(server_hostname, username, password, 'lshw -C network -businfo')
     if not lshw_output:
         print("Failed to get network hardware info.")
         return {}
@@ -217,7 +485,7 @@ def get_interfaces_and_ips(server_ip, username, password, nic_match_str):
 
     iface_ip_map = {}
     for iface in interfaces:
-        ifconfig_output = run_ssh_command(server_ip, username, password, f'ifconfig {iface}')
+        ifconfig_output = run_ssh_command(server_hostname, username, password, f'ifconfig {iface}')
         ip = None
         if ifconfig_output:
             for line in ifconfig_output.splitlines():
@@ -280,7 +548,7 @@ def get_cable_length_from_switch(switch_host, switch_user, switch_pass, port_des
         return None
 
     # Extract port number from port_descr (e.g., et-0/0/52 -> 52)
-    match = re.search(r'et-0/0/(\d+)', port_descr)
+    match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/(\d+)', port_descr)
     if not match:
         print(f"Could not extract port number from PortDescr '{port_descr}'")
         return None
@@ -336,24 +604,37 @@ def get_lldp_neighbors_summary_ssh(server_hostname, username, password, target_i
 
     for line in output.splitlines():
         line = line.strip()
+
         if line.lower().startswith("interface:"):
+            # If we already collected a full entry, store it before moving on
+            if current_interface and current_sysname and (current_portdescr or current_portid):
+                if (target_interface is None) or (target_interface == current_interface):
+                    summary[current_sysname] = {
+                        "Interface": current_interface,
+                        "PortDescr": current_portdescr or "N/A",
+                        "PortId": current_portid or "N/A"
+                    }
+            # Start new block
             current_interface = line.split(":", 1)[1].strip().split(",")[0]
+            current_sysname = current_portdescr = current_portid = None
+
         elif line.lower().startswith("sysname:"):
             current_sysname = line.split(":", 1)[1].strip()
+
         elif line.lower().startswith("portdescr:"):
             current_portdescr = line.split(":", 1)[1].strip()
+
         elif line.lower().startswith("portid:"):
             current_portid = line.split(":", 1)[1].strip()
 
-        # Once all relevant fields are captured, store and reset
-        if current_interface and current_sysname and (current_portdescr or current_portid):
-            if (target_interface is None) or (target_interface == current_interface):
-                summary[current_sysname] = {
-                    "Interface": current_interface,
-                    "PortDescr": current_portdescr or "N/A",
-                    "PortId": current_portid or "N/A"
-                }
-            current_interface = current_sysname = current_portdescr = current_portid = None
+    # Final catch for last entry
+    if current_interface and current_sysname and (current_portdescr or current_portid):
+        if (target_interface is None) or (target_interface == current_interface):
+            summary[current_sysname] = {
+                "Interface": current_interface,
+                "PortDescr": current_portdescr or "N/A",
+                "PortId": current_portid or "N/A"
+            }
 
     return summary
 
@@ -403,36 +684,31 @@ def load_lldp_from_file(filename="lldp_before_reboot.json"):
 
 def wait_for_host_ssh(host, username, password, timeout=600, interval=10):
     """
-    Wait until SSH becomes available on a host.
-
-    Args:
-        host (str): Hostname/IP.
-        username (str): SSH user.
-        password (str): SSH password.
-        timeout (int): Max wait time in seconds.
-        interval (int): Polling interval in seconds.
-
-    Returns:
-        bool: True if SSH is available, False if timed out.
+    Wait for server to become reachable and responsive after reboot.
     """
     print(f"Waiting for {host} to become available after reboot...")
     start_time = time.time()
+
     while time.time() - start_time < timeout:
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             ssh.connect(host, username=username, password=password, timeout=10)
-            # Simple command to verify the shell is ready
-            stdin, stdout, stderr = ssh.exec_command("hostname")
+
+            # Use a meaningful shell-level command
+            stdin, stdout, stderr = ssh.exec_command("uptime")
             output = stdout.read().decode().strip()
-            if output:
-                print("Server is back online.")
-                ssh.close()
-                return True
             ssh.close()
-        except Exception as e:
-            print(f"SSH not ready yet: {e}")
+
+            if output and "load average" in output:
+                print("Server is back online and responsive.")
+                return True
+
+        except Exception:
+            pass
+
         time.sleep(interval)
+
     print(f"Timed out waiting for {host} to come back online.")
     return False
 
@@ -500,45 +776,43 @@ def compare_lldp_before_after(server_host, server_user, server_pass, interface):
 def reboot_server_ssh(host, username, password):
     """
     Reboot a remote Linux server over SSH.
-
-    Args:
-        host (str): Hostname/IP.
-        username (str): SSH username.
-        password (str): SSH password.
     """
     try:
         print(f"\nRebooting server {host}...")
-        output = run_ssh_command(host, username, password, "reboot")
-        print("Reboot command issued successfully (SSH session may close automatically).")
+        run_ssh_command(host, username, password, "nohup reboot >/dev/null 2>&1 &", suppress_ssh_errors=True)
+        print("Reboot command issued. Waiting for server to go down...")
+        time.sleep(10)  # Give it time to drop the session
     except Exception as e:
         print(f"Failed to send reboot command: {e}")
 
-def wait_for_lldp_ready(server_host, server_user, server_pass, interface, retries=6, delay=10):
+def wait_for_lldp_ready(server_host, server_user, server_pass, interface, timeout=120, interval=10):
     """
-    Wait for LLDP data to become available after reboot.
+    Wait silently for LLDP data to become available after reboot.
 
     Args:
         server_host (str): Hostname/IP.
         server_user (str): SSH user.
         server_pass (str): SSH password.
         interface (str): Network interface.
-        retries (int): Number of attempts.
-        delay (int): Delay between retries in seconds.
+        timeout (int): Maximum total wait time in seconds.
+        interval (int): Delay between attempts in seconds.
 
     Returns:
         dict or None: LLDP neighbor data or None if unavailable.
     """
-    for attempt in range(retries):
+    start_time = time.time()
+
+    while time.time() - start_time < timeout:
         try:
             lldp_data = get_lldp_neighbors_local_ssh(server_host, server_user, server_pass, interface)
             if lldp_data:
                 print("LLDP data retrieved successfully.")
                 return lldp_data
-        except Exception as e:
-            print(f"Attempt {attempt+1} failed: {e}")
-        print(f"Waiting {delay} seconds before retrying...")
-        time.sleep(delay)
-    print("Failed to retrieve LLDP data after multiple attempts.")
+        except:
+            pass
+        time.sleep(interval)
+
+    print("Failed to retrieve LLDP data after timeout.")
     return None
 
 def main():
@@ -568,15 +842,18 @@ def main():
 
     print(f"NIC String from config: '{nic_string_from_conf}'")
 
-    # Prompt for server hostname/IP
-    server_host = input("Enter server hostname (or IP): ").strip()
-    if not server_host:
-        print("Server hostname/IP is required.")
-        return
+    creds = read_creds()
 
-    # Prompt for server username and password
-    server_user = input("Enter server username: ").strip()
-    server_pass = getpass.getpass("Enter server password: ")
+    # Step 1: Select server at start
+    server = None
+    while not server:
+        server = select_server(creds.get('servers', []))
+    print(f"Selected server: {server['name']}")
+
+    # Use server credentials here for SSH etc.
+    server_host = server['name']
+    server_user = server['username']
+    server_pass = server['password']
 
     # Prompt for NIC match string, fallback to config if empty
     user_match_string = input(f"Enter NIC match string (default '{nic_string_from_conf}'): ").strip()
@@ -611,11 +888,6 @@ def main():
         device = next(iter(iface_ip_map))
 
     print(f"Selected device: {device}")
-
-    # Call the link down/up test first
-    print(f"\nRunning link down/up test on interface: {device}")
-    link_test_result = test_lldp_link_down_up(server_host, server_user, server_pass, device)
-    print(f"Overall test: {'PASSED' if link_test_result else 'FAILED'}.\n")
 
     # Retrieve LLDP data for the selected interface
     local_lldp = get_lldp_neighbors_local_ssh(server_host, server_user, server_pass, device)
@@ -664,6 +936,7 @@ def main():
 
     # Attempt to get cable length via ethtool
     cable_len = get_cable_length_ssh(server_host, server_user, server_pass, device, user_match_string)
+    port_descr = None
     if cable_len:
         print(f"Cable assembly length for {device}: {cable_len}")  
     else:
@@ -689,7 +962,6 @@ def main():
         switch_pass = getpass.getpass("Enter switch password: ")
 
         print(f"Querying cable lengths and interfaces from switch {switch_hostname}...")
-        port_descr = None
         if lldp_summary and switch_sysname:
             port_descr = lldp_summary[switch_sysname].get("PortDescr")
 
@@ -700,12 +972,90 @@ def main():
         else:
             print("Failed to retrieve cable length info from switch.")
 
+    # Call the link down/up test
+    run_link_test = input("Run LLDP link down/up test? (y/n): ").strip().lower()
+    if run_link_test == 'y':
+        link_test_result = test_lldp_link_down_up(server_host, server_user, server_pass, device)
+        print(f"Overall test: {'PASSED' if link_test_result else 'FAILED'}.\n")
+        print(f"===== Completed LLDP link down/up test for {device} =====\n")
+    else:
+        print("\nSkipped LLDP link down/up test.\n")
+
+    # Extract switch name from LLDP summary
+    switch_sysname = next(
+        (key for key, entry in lldp_summary.items()
+            if entry.get("Interface", "").lower() == device.lower()),
+        None
+    )
+
+    creds = read_creds()
+
+    # Normalize to short name (strip domain if present)
+    if switch_sysname and '.' in switch_sysname:
+        switch_shortname = switch_sysname.split('.')[0]
+    else:
+        switch_shortname = switch_sysname
+
+    # Try to find switch credentials in creds.yaml
+    switch_info = next(
+        (s for s in creds.get('switches', []) if s['name'] == switch_shortname),
+        None
+    )
+
+    if lldp_summary and switch_sysname:
+            port_descr = lldp_summary[switch_sysname].get("PortDescr")
+    match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/(\d+)', port_descr)
+    retry = 'y'
+    if switch_info:
+        switch_user = switch_info['username']
+        switch_pass = switch_info['password']
+        print(f"Using credentials for switch {switch_sysname} from yaml file to log in.\n")
+    else:
+        print(f"Switch {switch_sysname} not found in creds.yaml. Please enter credentials manually.")
+        while True:
+            switch_user = input("Enter switch username: ").strip()
+            switch_pass = getpass.getpass("Enter switch password: ")
+
+            # Try a harmless command to validate credentials
+            test_result = run_ssh_command(switch_sysname, switch_user, switch_pass, "show version")
+
+            if test_result == "AUTH_ERROR":
+                print("Incorrect username or password.")
+            elif test_result is None:
+                print("Could not connect to switch (check hostname or network).")
+            else:
+                print("Switch login successful.\n")
+                break
+
+            retry = input("Try logging in again? (y/n): ").strip().lower()
+            if retry != 'y':
+                print("Skipping switch-related tests.\n")
+                switch_user = None
+                switch_pass = None
+                break
+
+    # Run soft OIR test on all ports
+    if retry == 'y':
+        run_soft_oir = input("Run Soft OIR test on all ports? Test time for all ports ~5 to 10 minutes (y/n): ").strip().lower()
+        if run_soft_oir == 'y':
+            soft_oir_all_ports(switch_sysname, switch_user, switch_pass)
+            print(f"\n===== Completed Soft OIR Test for all ports =====\n")
+        else:
+            print("Skipping Soft OIR test on all ports.\n")
+    
+    # Run channelization test
+    if retry == 'y':
+        if input("Run channelization test? (y/n): ").lower().strip() == 'y':
+            test_channelization(switch_shortname, switch_user, switch_pass, match.group(0), match.group(1))
+        else:
+            print(f"Failed to extract interface from port description: {port_descr}")
+    
     # Save LLDP data before reboot for comparison later
-    print("Saving LLDP data before reboot...")
+    print("\nSaving LLDP data before reboot...")
     save_lldp_to_file(local_lldp)
 
     # Prompt user if they want to reboot the server and compare LLDP before/after reboot
-    should_reboot = input("Reboot the server before LLDP comparison? (y/n): ").strip().lower()
+    should_reboot = input("\nReboot the server before LLDP comparison? (y/n): ").strip().lower()
     if should_reboot == 'y':
         reboot_server_ssh(server_host, server_user, server_pass)
 
