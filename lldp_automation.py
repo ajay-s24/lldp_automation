@@ -179,7 +179,8 @@ def test_channelization(server_ip, username, password, interface, port_num):
     # Step 2: Get supported modes from chassis PIC output for this port number
     try:
         modes = get_capable_speeds_from_pic(server_ip, username, password, port_num)
-        print(f"Supported channelization modes for port {port_num}: {modes}")
+        mode_strings = [f"{lanes}x{speed}" for lanes, speed in modes]
+        print(f"Supported channelization modes for port {port_num}: {mode_strings}")
     except Exception as e:
         print(f"Failed to get capable speeds from PIC: {e}")
         modes = []
@@ -219,8 +220,18 @@ def test_channelization(server_ip, username, password, interface, port_num):
             dechannel_cmd = "cli -c 'configure; " + " ; ".join(revert_cmds) + " ; commit and-quit'"
             run_ssh_command(server_ip, username, password, dechannel_cmd)
             time.sleep(10)
-
-            results[mode_str] = "PASS"
+            sub_interfaces_found = bool(re.search(rf"{re.escape(interface)}:\d+", sub_intf_status))
+            revert_cmds = [
+                f"delete interfaces {interface} number-of-sub-ports",
+                f"set interfaces {interface} speed {original_speed}g"
+            ]
+            dechannel_cmd = "cli -c 'configure; " + " ; ".join(revert_cmds) + " ; commit and-quit'"
+            run_ssh_command(server_ip, username, password, dechannel_cmd)
+            time.sleep(10)
+            if sub_interfaces_found:
+                results[mode_str] = "PASS"
+            else:
+                results[mode_str] = "FAIL (No sub-interfaces found)"
         except Exception as e:
             print(f"Error during testing {mode_str} mode: {e}")
             results[mode_str] = f"FAIL - {e}"
@@ -1045,7 +1056,7 @@ def main():
     
     # Run channelization test
     if retry == 'y':
-        if input("Run channelization test? (y/n): ").lower().strip() == 'y':
+        if input("Run channelization test? Test time ~5 to 10 minutes (y/n): ").lower().strip() == 'y':
             test_channelization(switch_shortname, switch_user, switch_pass, match.group(0), match.group(1))
         else:
             print(f"Failed to extract interface from port description: {port_descr}")
