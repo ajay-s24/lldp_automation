@@ -11,6 +11,7 @@ from jnpr.junos import Device
 from jnpr.junos.exception import ConnectError
 from lxml import etree
 
+
 # Path to local config file
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'nic_config.json')
 
@@ -273,7 +274,6 @@ def get_capable_speeds_from_pic(server_ip, username, password, port_num):
 def test_channelization(server_ip, username, password, interface, port_num):
     print(f"\n===== Channelization Test for {interface} =====")
 
-    # Step 0: Extract parent interface (et-0/0/0)
     parent_interface = re.sub(r':\d+$', '', interface) 
 
     # Step 1: Get original speed from child interface (et-0/0/0:0)
@@ -396,7 +396,6 @@ def test_lldp_link_down_up(server_ip, username, password, interface):
 
     print(f"\n=== Testing LLDP behavior for interface '{interface}' ===\n")
 
-    # Step 0: Check link status
     if is_link_up(server_ip, username, password, interface):
         print(f"Initial physical link: UP")
     else:
