@@ -31,3 +31,7 @@ switches:
   - name: ny-q5130-03
     username: root
     password: Embe1mpls
+
+  - name: ny-q5130-04
+    username: root
+    password: Embe1mpls
