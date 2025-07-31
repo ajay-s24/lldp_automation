@@ -11,7 +11,6 @@ from jnpr.junos import Device
 from jnpr.junos.exception import ConnectError
 from lxml import etree
 
-
 # Path to local config file
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'nic_config.json')
 
