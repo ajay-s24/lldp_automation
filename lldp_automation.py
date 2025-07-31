@@ -73,18 +73,18 @@ def get_tx_laser_disabled_alarm(host, username, password, interface):
         str: 'On', 'Off', or 'Unknown'
     """
     try:
-        # Extract base interface from input (e.g., et-0/0/47 from ny-q5230-04-et-0/0/47-ens5np0...)
-        base_iface_match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/\d+', interface)
+        # Extract base interface (e.g., et-0/0/0:0 from full descriptor)
+        base_iface_match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/(\d+)(?::\d+)?', interface)
         if not base_iface_match:
             print(f"[WARN] Could not extract base interface from '{interface}'")
-            return "Unknown"
+            return "Unknown, optical diagnostics not supported"
         base_iface = base_iface_match.group(0)
 
         command = 'cli -c "show interfaces diagnostics optics | no-more"'
         output = run_ssh_command(host, username, password, command)
         if not output:
-            print("[ERROR] Empty output from optics diagnostics command")
-            return "Unknown"
+            print("Empty output from optics diagnostics command.")
+            return "Unknown, optical diagnostics not supported"
 
         lines = output.splitlines()
         current_iface = None
@@ -94,79 +94,80 @@ def get_tx_laser_disabled_alarm(host, username, password, interface):
         for line in lines:
             line = line.strip()
 
-            # Detect interface block start, interface can have suffix like :0 or .0
             iface_match = re.match(r'^Physical interface:\s+(\S+)', line)
             if iface_match:
-                current_iface_full = iface_match.group(1)  # e.g., et-0/0/0:0
-                # Extract base iface by stripping suffixes like :0 or .0
-                current_iface_base = re.sub(r'[:.]\d+$', '', current_iface_full)
-                in_target_iface_block = (current_iface_base == base_iface)
+                current_iface_full = iface_match.group(1)
+                in_target_iface_block = (current_iface_full == base_iface)
                 in_lane_section = False
                 continue
 
             if not in_target_iface_block:
                 continue
 
-            # Detect lane section start
-            if re.match(r'^Lane \d+', line):
+            if re.match(r'^\s*Lane \d+', line):
                 in_lane_section = True
                 continue
 
-            # If inside lane section and line has the Tx laser disabled alarm
             if in_lane_section and 'Tx laser disabled alarm' in line:
                 state_match = re.search(r'Tx laser disabled alarm\s*:\s*(\S+)', line)
                 if state_match:
                     return state_match.group(1)
 
-        return "Unknown"
+        return "Unknown, optical diagnostics not supported"
 
     except Exception as e:
         print(f"[ERROR] Exception while fetching laser alarm for {interface}: {e}")
-        return "Unknown"
-
-    except Exception as e:
-        print(f"[ERROR] Failed to fetch laser alarm state for {interface}: {e}")
-        return "Unknown"
+        return "Unknown, optical diagnostics not supported"
 
 def laser_on_off_test(host, username, password, interface):
+    """
+    Perform laser ON/OFF validation test on a given switch interface.
+    """
     print(f"\nStarting Laser ON/OFF test on interface {interface}")
 
+    # Extract base interface name (e.g., et-0/0/0:0)
+    base_iface_match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/\d+(?::\d+)?', interface)
+    if base_iface_match:
+        base_iface = base_iface_match.group(0)
+    else:
+        print("[ERROR] Could not extract base interface from interface string")
+        return False
+
+    # Step 1: Add temp config if not already present
+    temp_desc = "Laser test"
+    config_cmd = f'cli -c "configure; set interfaces {base_iface} description \\"{temp_desc}\\"; commit and-quit"'
+    run_ssh_command(host, username, password, config_cmd)
+
+    # Step 2: Get pre-test alarm state
     before = get_tx_laser_disabled_alarm(host, username, password, interface)
     print(f"[Before] Tx laser disabled alarm: {before}")
 
-    # Deactivate interface (laser off)
-    cmds_deactivate = [
-        f"deactivate interfaces {interface}",
-    ]
-    for cmd in cmds_deactivate:
-        run_ssh_command(host, username, password, f'cli -c "{cmd}"')
-    run_ssh_command(host, username, password, 'cli -c "commit"')
+    # Step 3: Deactivate interface (simulate laser off)
+    deactivate_cmd = f'cli -c "configure; deactivate interfaces {base_iface}; commit and-quit"'
+    run_ssh_command(host, username, password, deactivate_cmd)
     time.sleep(3)
 
     after_deactivate = get_tx_laser_disabled_alarm(host, username, password, interface)
     print(f"[After Deactivate] Tx laser disabled alarm: {after_deactivate}")
 
-    # Reactivate interface (laser on)
-    cmds_activate = [
-        f"activate interfaces {interface}",
-    ]
-    for cmd in cmds_activate:
-        run_ssh_command(host, username, password, f'cli -c "{cmd}"')
-    run_ssh_command(host, username, password, 'cli -c "commit"')
+    # Step 4: Reactivate interface (simulate laser on)
+    activate_cmd = f'cli -c "configure; activate interfaces {base_iface}; commit and-quit"'
+    run_ssh_command(host, username, password, activate_cmd)
     time.sleep(3)
 
     after_reactivate = get_tx_laser_disabled_alarm(host, username, password, interface)
     print(f"[After Reactivate] Tx laser disabled alarm: {after_reactivate}")
 
-    # Evaluate expected behavior:
-    # Before deactivate: laser disabled alarm should be Off (laser enabled)
-    # After deactivate: laser disabled alarm should be On (laser off)
-    # After reactivate: laser disabled alarm should be Off again (laser enabled)
+    # Step 5: Clean up temp config
+    cleanup_cmd = f'cli -c "configure; delete interfaces {base_iface} description; commit and-quit"'
+    run_ssh_command(host, username, password, cleanup_cmd)
+
+    # Step 6: Final test evaluation
     if before == 'Off' and after_deactivate == 'On' and after_reactivate == 'Off':
-        print(f"[PASS] Laser ON/OFF behavior validated successfully on {interface}\n")
+        print(f"[PASS] Laser ON/OFF behavior validated successfully on {base_iface}\n")
         return True
     else:
-        print(f"[FAIL] Laser ON/OFF behavior NOT as expected on {interface}\n")
+        print(f"[FAIL] Laser ON/OFF behavior NOT as expected on {base_iface} \n")
         return False
 
 def get_alarms(host, username, password):
@@ -273,7 +274,10 @@ def get_capable_speeds_from_pic(server_ip, username, password, port_num):
 def test_channelization(server_ip, username, password, interface, port_num):
     print(f"\n===== Channelization Test for {interface} =====")
 
-    # Step 1: Get original speed
+    # Step 0: Extract parent interface (et-0/0/0)
+    parent_interface = re.sub(r':\d+$', '', interface) 
+
+    # Step 1: Get original speed from child interface (et-0/0/0:0)
     try:
         media_before = run_ssh_command(server_ip, username, password,
             f"cli -c 'show interfaces {interface} media'")
@@ -305,10 +309,10 @@ def test_channelization(server_ip, username, password, interface, port_num):
         print(f"\n--- Testing {mode_str} mode ---")
 
         try:
-            # Apply channelization
+            # Apply channelization on the parent interface
             cmds = [
-                f"set interfaces {interface} number-of-sub-ports {lanes}",
-                f"set interfaces {interface} speed {speed}g"
+                f"set interfaces {parent_interface} number-of-sub-ports {lanes}",
+                f"set interfaces {parent_interface} speed {speed}g"
             ]
             channelize_cmd = "cli -c 'configure; " + " ; ".join(cmds) + " ; commit and-quit'"
             run_ssh_command(server_ip, username, password, channelize_cmd)
@@ -317,27 +321,23 @@ def test_channelization(server_ip, username, password, interface, port_num):
             # Verify sub-interfaces
             sub_intf_status = run_ssh_command(
                 server_ip, username, password,
-                f"cli -c 'show interfaces terse | match \"{interface}([^0-9]|$)\"'"
+                f"cli -c 'show interfaces terse | match \"{parent_interface}:[0-9]+\"'"
             )
             print("\nSub-interfaces after channelization:\n")
             print(sub_intf_status)
 
-            # Revert to original speed
+            # Check if sub-interfaces appeared
+            sub_interfaces_found = bool(re.search(rf"{re.escape(parent_interface)}:\d+", sub_intf_status))
+
+            # Revert to original config
             revert_cmds = [
-                f"delete interfaces {interface} number-of-sub-ports",
-                f"set interfaces {interface} speed {original_speed}g"
+                f"delete interfaces {parent_interface} number-of-sub-ports",
+                f"set interfaces {parent_interface} speed {original_speed}g"
             ]
             dechannel_cmd = "cli -c 'configure; " + " ; ".join(revert_cmds) + " ; commit and-quit'"
             run_ssh_command(server_ip, username, password, dechannel_cmd)
             time.sleep(10)
-            sub_interfaces_found = bool(re.search(rf"{re.escape(interface)}:\d+", sub_intf_status))
-            revert_cmds = [
-                f"delete interfaces {interface} number-of-sub-ports",
-                f"set interfaces {interface} speed {original_speed}g"
-            ]
-            dechannel_cmd = "cli -c 'configure; " + " ; ".join(revert_cmds) + " ; commit and-quit'"
-            run_ssh_command(server_ip, username, password, dechannel_cmd)
-            time.sleep(10)
+
             if sub_interfaces_found:
                 results[mode_str] = "PASS"
             else:
@@ -346,11 +346,11 @@ def test_channelization(server_ip, username, password, interface, port_num):
             print(f"Error during testing {mode_str} mode: {e}")
             results[mode_str] = f"FAIL - {e}"
 
-            # Try to revert safely in case of failure
             try:
+                # Safe revert on failure
                 revert_cmds = [
-                    f"delete interfaces {interface} number-of-sub-ports",
-                    f"set interfaces {interface} speed {original_speed}g"
+                    f"delete interfaces {parent_interface} number-of-sub-ports",
+                    f"set interfaces {parent_interface} speed {original_speed}g"
                 ]
                 dechannel_cmd = "cli -c 'configure; " + " ; ".join(revert_cmds) + " ; commit and-quit'"
                 run_ssh_command(server_ip, username, password, dechannel_cmd)
@@ -669,7 +669,7 @@ def get_cable_length_from_switch(switch_host, switch_user, switch_pass, port_des
         return None
 
     # Extract port number from port_descr (e.g., et-0/0/52 -> 52)
-    match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/(\d+)', port_descr)
+    match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/(\d+)(?::\d+)?', port_descr)
     if not match:
         print(f"Could not extract port number from PortDescr '{port_descr}'")
         return None
@@ -1070,6 +1070,13 @@ def main():
         )
         creds = read_creds()
 
+    switch_sysname = next(
+        (key for key, entry in lldp_summary.items()
+         if entry.get("Interface", "").lower() == device.lower()),
+        None
+    )
+    creds = read_creds()
+    
     # Normalize to short name (strip domain if present)
     if switch_sysname and '.' in switch_sysname:
         switch_shortname = switch_sysname.split('.')[0]
@@ -1077,14 +1084,28 @@ def main():
         switch_shortname = switch_sysname
 
     # Try to find switch credentials in creds.yaml
-    switch_info = next(
-        (s for s in creds.get('switches', []) if s['name'] == switch_shortname),
-        None
-    )
+    if lldp_summary and switch_sysname:
+        port_descr = lldp_summary[switch_sysname].get("PortDescr", "")
+        
+        # Extract short switch hostname from PortDescr, e.g. 'ny-q5130-04' from 'ny-q5130-04-et-0/0/2...'
+        shortname_match = re.match(r'([^-]+-[^-]+-\d+)', port_descr)  # adjust pattern if needed
+        if shortname_match:
+            switch_shortname = shortname_match.group(1)
+        else:
+            # fallback if regex fails
+            switch_shortname = switch_sysname.split('.')[0] if '.' in switch_sysname else switch_sysname
+
+        # Now find credentials by shortname
+        switch_info = next(
+            (s for s in creds.get('switches', []) if s['name'] == switch_shortname),
+            None
+        )
+    else:
+        switch_info = None
 
     if lldp_summary and switch_sysname:
             port_descr = lldp_summary[switch_sysname].get("PortDescr")
-    match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/(\d+)', port_descr)
+    match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/(\d+)(?::\d+)?', port_descr)
     retry = 'y'
     if switch_info:
         switch_user = switch_info['username']
@@ -1150,14 +1171,29 @@ def main():
         switch_shortname = switch_sysname
 
     # Try to find switch credentials in creds.yaml
-    switch_info = next(
-        (s for s in creds.get('switches', []) if s['name'] == switch_shortname),
-        None
-    )
+    # Try to find switch credentials in creds.yaml
+    if lldp_summary and switch_sysname:
+        port_descr = lldp_summary[switch_sysname].get("PortDescr", "")
+        
+        # Extract short switch hostname from PortDescr, e.g. 'ny-q5130-04' from 'ny-q5130-04-et-0/0/2...'
+        shortname_match = re.match(r'([^-]+-[^-]+-\d+)', port_descr)  # adjust pattern if needed
+        if shortname_match:
+            switch_shortname = shortname_match.group(1)
+        else:
+            # fallback if regex fails
+            switch_shortname = switch_sysname.split('.')[0] if '.' in switch_sysname else switch_sysname
+
+        # Now find credentials by shortname
+        switch_info = next(
+            (s for s in creds.get('switches', []) if s['name'] == switch_shortname),
+            None
+        )
+    else:
+        switch_info = None
 
     if lldp_summary and switch_sysname:
             port_descr = lldp_summary[switch_sysname].get("PortDescr")
-    match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/(\d+)', port_descr)
+    match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/(\d+)(?::\d+)?', port_descr)
     retry = 'y'
     if switch_info:
         switch_user = switch_info['username']
@@ -1190,7 +1226,7 @@ def main():
     # Run laser on/off test
     run_laser_test = input("Run laser on/off test for connected port? (y/n): ").strip().lower()
     if run_laser_test == 'y' and switch_user and switch_pass and port_descr:
-        laser_on_off_test(switch_sysname, switch_user, switch_pass, port_descr)
+        laser_on_off_test(switch_shortname, switch_user, switch_pass, port_descr)
     else:
         print("Skipping laser on/off test.\n")
 
@@ -1205,8 +1241,11 @@ def main():
     
     # Run channelization test
     if retry == 'y':
-        if input("Run channelization test? Test time ~5 to 10 minutes (y/n): ").lower().strip() == 'y':
-            test_channelization(switch_shortname, switch_user, switch_pass, match.group(0), match.group(1))
+        if match:
+            interface_full = match.group(0)
+            interface_number = re.search(r'(\d+)(?::\d+)?$', interface_full).group(1)
+            if input("Run channelization test? Test time ~5 to 10 minutes (y/n): ").lower().strip() == 'y':
+                test_channelization(switch_shortname, switch_user, switch_pass, interface_full, interface_number)
         else:
             print(f"Failed to extract interface from port description: {port_descr}")
     
