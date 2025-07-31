@@ -59,6 +59,116 @@ def get_active_interfaces(host, username, password):
             interfaces.add(match.group(1))
     return sorted(interfaces)
 
+def get_tx_laser_disabled_alarm(host, username, password, interface):
+    """
+    Fetch the 'Tx laser disabled alarm' state for a specific interface on the Juniper switch.
+
+    Args:
+        host (str): IP or hostname of the switch.
+        username (str): SSH username.
+        password (str): SSH password.
+        interface (str): Target interface string (may include hostname suffixes).
+
+    Returns:
+        str: 'On', 'Off', or 'Unknown'
+    """
+    try:
+        # Extract base interface from input (e.g., et-0/0/47 from ny-q5230-04-et-0/0/47-ens5np0...)
+        base_iface_match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/\d+', interface)
+        if not base_iface_match:
+            print(f"[WARN] Could not extract base interface from '{interface}'")
+            return "Unknown"
+        base_iface = base_iface_match.group(0)
+
+        command = 'cli -c "show interfaces diagnostics optics | no-more"'
+        output = run_ssh_command(host, username, password, command)
+        if not output:
+            print("[ERROR] Empty output from optics diagnostics command")
+            return "Unknown"
+
+        lines = output.splitlines()
+        current_iface = None
+        in_target_iface_block = False
+        in_lane_section = False
+
+        for line in lines:
+            line = line.strip()
+
+            # Detect interface block start, interface can have suffix like :0 or .0
+            iface_match = re.match(r'^Physical interface:\s+(\S+)', line)
+            if iface_match:
+                current_iface_full = iface_match.group(1)  # e.g., et-0/0/0:0
+                # Extract base iface by stripping suffixes like :0 or .0
+                current_iface_base = re.sub(r'[:.]\d+$', '', current_iface_full)
+                in_target_iface_block = (current_iface_base == base_iface)
+                in_lane_section = False
+                continue
+
+            if not in_target_iface_block:
+                continue
+
+            # Detect lane section start
+            if re.match(r'^Lane \d+', line):
+                in_lane_section = True
+                continue
+
+            # If inside lane section and line has the Tx laser disabled alarm
+            if in_lane_section and 'Tx laser disabled alarm' in line:
+                state_match = re.search(r'Tx laser disabled alarm\s*:\s*(\S+)', line)
+                if state_match:
+                    return state_match.group(1)
+
+        return "Unknown"
+
+    except Exception as e:
+        print(f"[ERROR] Exception while fetching laser alarm for {interface}: {e}")
+        return "Unknown"
+
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch laser alarm state for {interface}: {e}")
+        return "Unknown"
+
+def laser_on_off_test(host, username, password, interface):
+    print(f"\nStarting Laser ON/OFF test on interface {interface}")
+
+    before = get_tx_laser_disabled_alarm(host, username, password, interface)
+    print(f"[Before] Tx laser disabled alarm: {before}")
+
+    # Deactivate interface (laser off)
+    cmds_deactivate = [
+        f"deactivate interfaces {interface}",
+    ]
+    for cmd in cmds_deactivate:
+        run_ssh_command(host, username, password, f'cli -c "{cmd}"')
+    run_ssh_command(host, username, password, 'cli -c "commit"')
+    time.sleep(3)
+
+    after_deactivate = get_tx_laser_disabled_alarm(host, username, password, interface)
+    print(f"[After Deactivate] Tx laser disabled alarm: {after_deactivate}")
+
+    # Reactivate interface (laser on)
+    cmds_activate = [
+        f"activate interfaces {interface}",
+    ]
+    for cmd in cmds_activate:
+        run_ssh_command(host, username, password, f'cli -c "{cmd}"')
+    run_ssh_command(host, username, password, 'cli -c "commit"')
+    time.sleep(3)
+
+    after_reactivate = get_tx_laser_disabled_alarm(host, username, password, interface)
+    print(f"[After Reactivate] Tx laser disabled alarm: {after_reactivate}")
+
+    # Evaluate expected behavior:
+    # Before deactivate: laser disabled alarm should be Off (laser enabled)
+    # After deactivate: laser disabled alarm should be On (laser off)
+    # After reactivate: laser disabled alarm should be Off again (laser enabled)
+    if before == 'Off' and after_deactivate == 'On' and after_reactivate == 'Off':
+        print(f"[PASS] Laser ON/OFF behavior validated successfully on {interface}\n")
+        return True
+    else:
+        print(f"[FAIL] Laser ON/OFF behavior NOT as expected on {interface}\n")
+        return False
+
 def get_alarms(host, username, password):
     return run_ssh_command(host, username, password, 'cli -c "show chassis alarms"')
 
@@ -958,30 +1068,62 @@ def main():
              if entry.get("Interface", "").lower() == device.lower()),
             None
         )
-        # Find switch system name from LLDP summary
-        if switch_sysname:
-            switch_hostname = switch_sysname.split('.')[0]
-            print(f"Found switch from LLDP neighbor summary: {switch_hostname} (full sysname: {switch_sysname})")
-        else:
-            switch_hostname = input("Enter switch hostname manually: ").strip()
-            if not switch_hostname:
-                print("Switch hostname is required.")
-                return
-                  
-        # Prompt for switch login credentials
-        switch_user = input("Enter switch username: ").strip()
-        switch_pass = getpass.getpass("Enter switch password: ")
+        creds = read_creds()
 
-        print(f"Querying cable lengths and interfaces from switch {switch_hostname}...")
-        if lldp_summary and switch_sysname:
+    # Normalize to short name (strip domain if present)
+    if switch_sysname and '.' in switch_sysname:
+        switch_shortname = switch_sysname.split('.')[0]
+    else:
+        switch_shortname = switch_sysname
+
+    # Try to find switch credentials in creds.yaml
+    switch_info = next(
+        (s for s in creds.get('switches', []) if s['name'] == switch_shortname),
+        None
+    )
+
+    if lldp_summary and switch_sysname:
             port_descr = lldp_summary[switch_sysname].get("PortDescr")
+    match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/(\d+)', port_descr)
+    retry = 'y'
+    if switch_info:
+        switch_user = switch_info['username']
+        switch_pass = switch_info['password']
+        print(f"Using credentials for switch {switch_sysname} from yaml file to log in.\n")
+    else:
+        print(f"Switch {switch_sysname} not found in creds.yaml. Please enter credentials manually.")
+        while True:
+            switch_user = input("Enter switch username: ").strip()
+            switch_pass = getpass.getpass("Enter switch password: ")
 
-        # Get cable length info from switch CLI
-        switch_cable_info = get_cable_length_from_switch(switch_hostname, switch_user, switch_pass, port_descr)
-        if switch_cable_info:
-            print(f"Cable length reported by switch for port descr '{port_descr}': {switch_cable_info}")
-        else:
-            print("Failed to retrieve cable length info from switch.")
+            # Try a harmless command to validate credentials
+            test_result = run_ssh_command(switch_sysname, switch_user, switch_pass, "show version")
+
+            if test_result == "AUTH_ERROR":
+                print("Incorrect username or password.")
+            elif test_result is None:
+                print("Could not connect to switch (check hostname or network).")
+            else:
+                print("Switch login successful.\n")
+                break
+
+            retry = input("Try logging in again? (y/n): ").strip().lower()
+            if retry != 'y':
+                print("Skipping switch-related tests.\n")
+                switch_user = None
+                switch_pass = None
+                break
+
+    print(f"Querying cable lengths and interfaces from switch {switch_shortname}...")
+    if lldp_summary and switch_sysname:
+        port_descr = lldp_summary[switch_sysname].get("PortDescr")
+
+    # Get cable length info from switch CLI
+    switch_cable_info = get_cable_length_from_switch(switch_shortname, switch_user, switch_pass, port_descr)
+    if switch_cable_info:
+        print(f"Cable length reported by switch for port descr '{port_descr}': {switch_cable_info}")
+    else:
+        print("Failed to retrieve cable length info from switch.")
 
     # Call the link down/up test
     run_link_test = input("Run LLDP link down/up test? (y/n): ").strip().lower()
@@ -1044,6 +1186,13 @@ def main():
                 switch_user = None
                 switch_pass = None
                 break
+
+    # Run laser on/off test
+    run_laser_test = input("Run laser on/off test for connected port? (y/n): ").strip().lower()
+    if run_laser_test == 'y' and switch_user and switch_pass and port_descr:
+        laser_on_off_test(switch_sysname, switch_user, switch_pass, port_descr)
+    else:
+        print("Skipping laser on/off test.\n")
 
     # Run soft OIR test on all ports
     if retry == 'y':
