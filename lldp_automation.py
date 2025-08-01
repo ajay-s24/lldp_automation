@@ -561,11 +561,12 @@ def get_lldp_neighbors_local_ssh(server_ip, username, password, interface):
         return None
     try:
         data = json.loads(output)
-        interface_list = data.get('lldp', {}).get('interface', [])
-        for iface_dict in interface_list:
-            for iface_name in iface_dict:
+        interfaces = data.get('lldp', {}).get('interface', [])
+        for iface_dict in interfaces:
+            for iface_name, iface_data in iface_dict.items():
                 if iface_name.strip().lower() == interface.strip().lower():
-                    return iface_dict[iface_name]
+                    return iface_data
+
         print(f"Interface {interface} not found in LLDP neighbor data.")
     except Exception as e:
         print(f"Error parsing LLDP JSON: {e}")
@@ -1053,180 +1054,83 @@ def main():
     else:
         print("No LLDP neighbor summary data found.")
 
-    # Attempt to get cable length via ethtool
     cable_len = get_cable_length_ssh(server_host, server_user, server_pass, device, user_match_string)
     port_descr = None
+
     if cable_len:
-        print(f"Cable assembly length for {device}: {cable_len}")  
+        print(f"Cable assembly length for {device}: {cable_len}")
     else:
         print(f"No cable assembly length info available for {device} by using ethtool.\nAttempting to get cable lengths from switch...")
 
+        # Lookup LLDP summary to get switch sysname and port description
         switch_sysname = next(
-            (key for key, entry in lldp_summary.items()
-             if entry.get("Interface", "").lower() == device.lower()),
+            (key for key, entry in lldp_summary.items() if entry.get("Interface", "").lower() == device.lower()),
             None
         )
+
         creds = read_creds()
+        switch_shortname = switch_sysname.split('.')[0] if switch_sysname and '.' in switch_sysname else switch_sysname
+        port_descr = lldp_summary.get(switch_sysname, {}).get("PortDescr", "") if switch_sysname else ""
 
-    switch_sysname = next(
-        (key for key, entry in lldp_summary.items()
-         if entry.get("Interface", "").lower() == device.lower()),
-        None
-    )
-    creds = read_creds()
+        # Try extracting shortname from PortDescr if available
+        match = re.match(r'([^-]+-[^-]+-\d+)', port_descr)
+        if match:
+            switch_shortname = match.group(1)
+
+        # Try to locate switch credentials in creds.yaml
+        switch_info = next((s for s in creds.get("switches", []) if s["name"] == switch_shortname), None)
+
+        if switch_info:
+            switch_user = switch_info["username"]
+            switch_pass = switch_info["password"]
+            print(f"Using credentials for switch {switch_sysname} from yaml file to log in.\n")
+        else:
+            print(f"Switch {switch_sysname} not found in creds.yaml. Please enter credentials manually.")
+            while True:
+                switch_user = input("Enter switch username: ").strip()
+                switch_pass = getpass.getpass("Enter switch password: ")
+
+                # Try test command to validate switch access
+                test_result = run_ssh_command(switch_sysname, switch_user, switch_pass, "show version")
+                if test_result == "AUTH_ERROR":
+                    print("Incorrect username or password.")
+                elif test_result is None:
+                    print("Could not connect to switch (check hostname or network).")
+                else:
+                    print("Switch login successful.\n")
+                    break
+
+                retry = input("Try logging in again? (y/n): ").strip().lower()
+                if retry != "y":
+                    print("Skipping switch-related tests.\n")
+                    switch_user = None
+                    switch_pass = None
+                    break
+
+        if switch_user and switch_pass and port_descr:
+            print(f"Querying cable lengths and interfaces from switch {switch_shortname}...")
+            switch_cable_info = get_cable_length_from_switch(switch_shortname, switch_user, switch_pass, port_descr)
+            if switch_cable_info:
+                print(f"Cable length reported by switch for port descr '{port_descr}': {switch_cable_info}")
+            else:
+                print("Failed to retrieve cable length info from switch.")
+
+    if retry == 'y':
+        run_link_test = input("Run LLDP link down/up test? (y/n): ").strip().lower()
+        if run_link_test == 'y':
+            link_test_result = test_lldp_link_down_up(server_host, server_user, server_pass, device)
+            print(f"Overall test: {'PASSED' if link_test_result else 'FAILED'}.\n")
+            print(f"===== Completed LLDP link down/up test for {device} =====\n")
+        else:
+            print("\nSkipped LLDP link down/up test.\n")
     
-    # Normalize to short name (strip domain if present)
-    if switch_sysname and '.' in switch_sysname:
-        switch_shortname = switch_sysname.split('.')[0]
-    else:
-        switch_shortname = switch_sysname
-
-    # Try to find switch credentials in creds.yaml
-    if lldp_summary and switch_sysname:
-        port_descr = lldp_summary[switch_sysname].get("PortDescr", "")
-        
-        # Extract short switch hostname from PortDescr, e.g. 'ny-q5130-04' from 'ny-q5130-04-et-0/0/2...'
-        shortname_match = re.match(r'([^-]+-[^-]+-\d+)', port_descr)  # adjust pattern if needed
-        if shortname_match:
-            switch_shortname = shortname_match.group(1)
-        else:
-            # fallback if regex fails
-            switch_shortname = switch_sysname.split('.')[0] if '.' in switch_sysname else switch_sysname
-
-        # Now find credentials by shortname
-        switch_info = next(
-            (s for s in creds.get('switches', []) if s['name'] == switch_shortname),
-            None
-        )
-    else:
-        switch_info = None
-
-    if lldp_summary and switch_sysname:
-            port_descr = lldp_summary[switch_sysname].get("PortDescr")
-    match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/(\d+)(?::\d+)?', port_descr)
-    retry = 'y'
-    if switch_info:
-        switch_user = switch_info['username']
-        switch_pass = switch_info['password']
-        print(f"Using credentials for switch {switch_sysname} from yaml file to log in.\n")
-    else:
-        print(f"Switch {switch_sysname} not found in creds.yaml. Please enter credentials manually.")
-        while True:
-            switch_user = input("Enter switch username: ").strip()
-            switch_pass = getpass.getpass("Enter switch password: ")
-
-            # Try a harmless command to validate credentials
-            test_result = run_ssh_command(switch_sysname, switch_user, switch_pass, "show version")
-
-            if test_result == "AUTH_ERROR":
-                print("Incorrect username or password.")
-            elif test_result is None:
-                print("Could not connect to switch (check hostname or network).")
-            else:
-                print("Switch login successful.\n")
-                break
-
-            retry = input("Try logging in again? (y/n): ").strip().lower()
-            if retry != 'y':
-                print("Skipping switch-related tests.\n")
-                switch_user = None
-                switch_pass = None
-                break
-
-    print(f"Querying cable lengths and interfaces from switch {switch_shortname}...")
-    if lldp_summary and switch_sysname:
-        port_descr = lldp_summary[switch_sysname].get("PortDescr")
-
-    # Get cable length info from switch CLI
-    switch_cable_info = get_cable_length_from_switch(switch_shortname, switch_user, switch_pass, port_descr)
-    if switch_cable_info:
-        print(f"Cable length reported by switch for port descr '{port_descr}': {switch_cable_info}")
-    else:
-        print("Failed to retrieve cable length info from switch.")
-
-    # Call the link down/up test
-    run_link_test = input("Run LLDP link down/up test? (y/n): ").strip().lower()
-    if run_link_test == 'y':
-        link_test_result = test_lldp_link_down_up(server_host, server_user, server_pass, device)
-        print(f"Overall test: {'PASSED' if link_test_result else 'FAILED'}.\n")
-        print(f"===== Completed LLDP link down/up test for {device} =====\n")
-    else:
-        print("\nSkipped LLDP link down/up test.\n")
-
-    # Extract switch name from LLDP summary
-    switch_sysname = next(
-        (key for key, entry in lldp_summary.items()
-            if entry.get("Interface", "").lower() == device.lower()),
-        None
-    )
-
-    creds = read_creds()
-
-    # Normalize to short name (strip domain if present)
-    if switch_sysname and '.' in switch_sysname:
-        switch_shortname = switch_sysname.split('.')[0]
-    else:
-        switch_shortname = switch_sysname
-
-    # Try to find switch credentials in creds.yaml
-    # Try to find switch credentials in creds.yaml
-    if lldp_summary and switch_sysname:
-        port_descr = lldp_summary[switch_sysname].get("PortDescr", "")
-        
-        # Extract short switch hostname from PortDescr, e.g. 'ny-q5130-04' from 'ny-q5130-04-et-0/0/2...'
-        shortname_match = re.match(r'([^-]+-[^-]+-\d+)', port_descr)  # adjust pattern if needed
-        if shortname_match:
-            switch_shortname = shortname_match.group(1)
-        else:
-            # fallback if regex fails
-            switch_shortname = switch_sysname.split('.')[0] if '.' in switch_sysname else switch_sysname
-
-        # Now find credentials by shortname
-        switch_info = next(
-            (s for s in creds.get('switches', []) if s['name'] == switch_shortname),
-            None
-        )
-    else:
-        switch_info = None
-
-    if lldp_summary and switch_sysname:
-            port_descr = lldp_summary[switch_sysname].get("PortDescr")
-    match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/(\d+)(?::\d+)?', port_descr)
-    retry = 'y'
-    if switch_info:
-        switch_user = switch_info['username']
-        switch_pass = switch_info['password']
-        print(f"Using credentials for switch {switch_sysname} from yaml file to log in.\n")
-    else:
-        print(f"Switch {switch_sysname} not found in creds.yaml. Please enter credentials manually.")
-        while True:
-            switch_user = input("Enter switch username: ").strip()
-            switch_pass = getpass.getpass("Enter switch password: ")
-
-            # Try a harmless command to validate credentials
-            test_result = run_ssh_command(switch_sysname, switch_user, switch_pass, "show version")
-
-            if test_result == "AUTH_ERROR":
-                print("Incorrect username or password.")
-            elif test_result is None:
-                print("Could not connect to switch (check hostname or network).")
-            else:
-                print("Switch login successful.\n")
-                break
-
-            retry = input("Try logging in again? (y/n): ").strip().lower()
-            if retry != 'y':
-                print("Skipping switch-related tests.\n")
-                switch_user = None
-                switch_pass = None
-                break
-
     # Run laser on/off test
-    run_laser_test = input("Run laser on/off test for connected port? (y/n): ").strip().lower()
-    if run_laser_test == 'y' and switch_user and switch_pass and port_descr:
-        laser_on_off_test(switch_shortname, switch_user, switch_pass, port_descr)
-    else:
-        print("Skipping laser on/off test.\n")
+    if retry == 'y':
+        run_laser_test = input("Run laser on/off test for connected port? (y/n): ").strip().lower()
+        if run_laser_test == 'y' and switch_user and switch_pass and port_descr:
+            laser_on_off_test(switch_shortname, switch_user, switch_pass, port_descr)
+        else:
+            print("Skipping laser on/off test.\n")
 
     # Run soft OIR test on all ports
     if retry == 'y':
