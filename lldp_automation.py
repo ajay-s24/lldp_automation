@@ -1114,6 +1114,8 @@ def main():
                 print(f"Cable length reported by switch for port descr '{port_descr}': {switch_cable_info}")
             else:
                 print("Failed to retrieve cable length info from switch.")
+    
+    match = re.search(r'(et|xe|ge)-\d+/\d+/\d+(?::\d+)?', port_descr)
 
     if retry == 'y':
         run_link_test = input("Run LLDP link down/up test? (y/n): ").strip().lower()
