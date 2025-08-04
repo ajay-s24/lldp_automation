@@ -1079,7 +1079,7 @@ def main():
 
         # Try to locate switch credentials in creds.yaml
         switch_info = next((s for s in creds.get("switches", []) if s["name"] == switch_shortname), None)
-
+        retry = 'y'
         if switch_info:
             switch_user = switch_info["username"]
             switch_pass = switch_info["password"]
