@@ -511,37 +511,6 @@ def read_creds():
         print(f"Error reading credentials file: {e}")
         return {}
 
-def run_ssh_command(host, username, password, command, suppress_ssh_errors=False):
-    """
-    Run a command on a remote host via SSH.
-
-    Args:
-        host (str): Hostname.
-        username (str): SSH username.
-        password (str): SSH password.
-        command (str): Command to execute.
-        suppress_ssh_errors (bool): If True, suppress error messages.
-
-    Returns:
-        str: Output from the command or None on failure.
-    """
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    try:
-        ssh.connect(hostname=host, username=username, password=password)
-        stdin, stdout, stderr = ssh.exec_command(command)
-        output = stdout.read().decode()
-        error = stderr.read().decode()
-        ssh.close()
-        if error and not error.lower().startswith('warning'):
-            if not suppress_ssh_errors:
-                print(f"Error running remote command '{command}': {error.strip()}")
-        return output
-    except Exception as e:
-        if not suppress_ssh_errors:
-            print(f"SSH connection error: {e}")
-        return None
-
 def get_lldp_neighbors_local_ssh(server_ip, username, password, interface):
     """
     Retrieve LLDP neighbor information for a specific interface on the server.
