@@ -59,6 +59,70 @@ def get_active_interfaces(host, username, password):
             interfaces.add(match.group(1))
     return sorted(interfaces)
 
+def check_fec_status(host, username, password, interface):
+    """
+    Check FEC status for a given interface on a Juniper QFX switch via SSH.
+    
+    Args:
+        host (str): Hostname or IP of the switch
+        username (str): SSH username
+        password (str): SSH password
+        interface (str): Interface name, e.g. 'et-0/0/0:0'
+    
+    Returns:
+        dict: Parsed FEC info including mode, corrected errors, uncorrected errors, BER
+    """
+    command = f'cli -c "show interfaces {interface} media"'
+    output = run_ssh_command(host, username, password, command)
+    if not output:
+        print(f"Failed to get output for interface {interface}")
+        return None
+
+    fec_info = {
+        "interface": interface,
+        "fec_mode": None,
+        "corrected_errors": None,
+        "uncorrected_errors": None,
+        "pre_fec_ber": None,
+    }
+
+    # Regex patterns to extract data
+    fec_mode_re = re.compile(r"Ethernet FEC Mode\s*:\s*(\S+)")
+    corrected_re = re.compile(r"FEC Corrected Errors\s+(\d+)")
+    uncorrected_re = re.compile(r"FEC Uncorrected Errors\s+(\d+)")
+    ber_re = re.compile(r"PRE FEC BER\s+([\d.eE+-]+)")
+
+    # Parse lines
+    for line in output.splitlines():
+        if not fec_info["fec_mode"]:
+            m = fec_mode_re.search(line)
+            if m:
+                fec_info["fec_mode"] = m.group(1)
+        if not fec_info["corrected_errors"]:
+            m = corrected_re.search(line)
+            if m:
+                fec_info["corrected_errors"] = int(m.group(1))
+        if not fec_info["uncorrected_errors"]:
+            m = uncorrected_re.search(line)
+            if m:
+                fec_info["uncorrected_errors"] = int(m.group(1))
+        if not fec_info["pre_fec_ber"]:
+            m = ber_re.search(line)
+            if m:
+                try:
+                    fec_info["pre_fec_ber"] = float(m.group(1))
+                except ValueError:
+                    fec_info["pre_fec_ber"] = None
+
+    # Print summary
+    print(f"FEC status for interface {interface}:")
+    print(f"  FEC Mode: {fec_info['fec_mode']}")
+    print(f"  Corrected Errors: {fec_info['corrected_errors']}")
+    print(f"  Uncorrected Errors: {fec_info['uncorrected_errors']}")
+    print(f"  PRE FEC BER: {fec_info['pre_fec_ber']}\n")
+
+    return fec_info
+
 def get_tx_laser_disabled_alarm(host, username, password, interface):
     """
     Fetch the 'Tx laser disabled alarm' state for a specific interface on the Juniper switch.
@@ -1119,8 +1183,27 @@ def main():
             interface_number = re.search(r'(\d+)(?::\d+)?$', interface_full).group(1)
             if input("Run channelization test? Test time ~5 to 10 minutes (y/n): ").lower().strip() == 'y':
                 test_channelization(switch_shortname, switch_user, switch_pass, interface_full, interface_number)
+            else:
+                print("Skipping channelization test.\n")
         else:
             print(f"Failed to extract interface from port description: {port_descr}")
+
+    # Run FEC status check
+    if retry == 'y':
+        if input("\nRun FEC status check test? (y/n): ").lower().strip() == 'y':
+            print("\nChecking FEC status for the selected interface...")
+            fec_status = check_fec_status(switch_shortname, server_user, server_pass, port_descr)
+            if fec_status is None:
+                print("Failed to retrieve FEC status.\n")
+            else:
+                if fec_status.get("uncorrected_errors", 0) > 0:
+                    print("WARNING: Uncorrected FEC errors detected!\n")
+                else:
+                    print("FEC status looks good.\n")
+        else:
+            print("Skipping FEC status check.\n")
+
+    
     
     # Save LLDP data before reboot for comparison later
     print("\nSaving LLDP data before reboot...")
