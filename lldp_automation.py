@@ -123,6 +123,51 @@ def check_fec_status(host, username, password, interface):
 
     return fec_info
 
+def run_traffic_test(server_host, server_user, server_pass, ipv4=None, ipv6=None, count=5):
+    print("\n=== Traffic Test ===")
+    
+    if ipv4:
+        print(f"Testing IPv4: {ipv4}")
+        ping_cmd = f"ping -c {count} {ipv4}"
+        result = run_ssh_command(server_host, server_user, server_pass, ping_cmd)
+        if result and "0% packet loss" in result:
+            print("IPv4 ping successful.")
+        else:
+            print("IPv4 ping failed or unreachable.")
+    else:
+        print("No IPv4 address found in LLDP data.")
+
+    if ipv6:
+        print(f"\nTesting IPv6: {ipv6}")
+        ping6_cmd = f"ping6 -c {count} {ipv6}"
+        result6 = run_ssh_command(server_host, server_user, server_pass, ping6_cmd)
+        if result6 and "0% packet loss" in result6:
+            print("IPv6 ping successful.")
+        else:
+            print("IPv6 ping failed or unreachable.")
+    else:
+        print("No IPv6 address found in LLDP data.")
+
+def parse_lldp_ips(lldp_output, port_descr):
+    """
+    Extract IPv4 and IPv6 from JunOS 'show lldp neighbors detail' output for a specific interface.
+    """
+    ipv4 = ipv6 = None
+    blocks = lldp_output.split("Local Interface")
+
+    for block in blocks:
+        if port_descr in block:
+            ipv4_match = re.search(r"Address Type\s+:\s+IPv4.*?Address\s+:\s+([0-9.]+)", block, re.DOTALL)
+            ipv6_match = re.search(r"Address Type\s+:\s+IPv6.*?Address\s+:\s+([a-fA-F0-9:]+)", block, re.DOTALL)
+
+            if ipv4_match:
+                ipv4 = ipv4_match.group(1)
+            if ipv6_match:
+                ipv6 = ipv6_match.group(1)
+            break
+
+    return ipv4, ipv6
+
 def get_tx_laser_disabled_alarm(host, username, password, interface):
     """
     Fetch the 'Tx laser disabled alarm' state for a specific interface on the Juniper switch.
@@ -1087,69 +1132,75 @@ def main():
     else:
         print("No LLDP neighbor summary data found.")
 
+    # Attempt ethtool cable length retrieval
     cable_len = get_cable_length_ssh(server_host, server_user, server_pass, device, user_match_string)
-    port_descr = None
 
+    # Lookup LLDP summary to get switch sysname and port description
+    switch_sysname = next(
+        (key for key, entry in lldp_summary.items() if entry.get("Interface", "").lower() == device.lower()),
+        None
+    )
+
+    # Default to "" to avoid NoneType errors
+    port_descr = lldp_summary.get(switch_sysname, {}).get("PortDescr", "") if switch_sysname else ""
+
+    # Attempt to extract shortname from port description
+    match = re.match(r'([^-]+-[^-]+-\d+)', port_descr)
+    switch_shortname = match.group(1) if match else (switch_sysname.split('.')[0] if switch_sysname and '.' in switch_sysname else switch_sysname)
+    retry = 'y'
+
+    # Load switch credentials (from YAML or prompt)
+    creds = read_creds()
+    switch_info = next((s for s in creds.get("switches", []) if s["name"] == switch_shortname), None)
+
+    switch_user = None
+    switch_pass = None
+
+    if switch_info:
+        switch_user = switch_info["username"]
+        switch_pass = switch_info["password"]
+        print(f"Using credentials for switch {switch_sysname} from yaml file to log in.\n")
+    else:
+        print(f"Switch {switch_sysname} not found in creds.yaml. Please enter credentials manually.")
+        while True:
+            switch_user = input("Enter switch username: ").strip()
+            switch_pass = getpass.getpass("Enter switch password: ")
+
+            # Validate login
+            test_result = run_ssh_command(switch_sysname, switch_user, switch_pass, "show version")
+            if test_result == "AUTH_ERROR":
+                print("Incorrect username or password.")
+            elif test_result is None:
+                print("Could not connect to switch (check hostname or network).")
+            else:
+                print("Switch login successful.\n")
+                break
+
+            retry = input("Try logging in again? (y/n): ").strip().lower()
+            if retry != "y":
+                print("Skipping switch-related tests.\n")
+                switch_user = None
+                switch_pass = None
+                break
+
+    # Always show ethtool-based cable length result
     if cable_len:
         print(f"Cable assembly length for {device}: {cable_len}")
     else:
-        print(f"No cable assembly length info available for {device} by using ethtool.\nAttempting to get cable lengths from switch...")
+        print(f"No cable assembly length info available for {device} by using ethtool.")
 
-        # Lookup LLDP summary to get switch sysname and port description
-        switch_sysname = next(
-            (key for key, entry in lldp_summary.items() if entry.get("Interface", "").lower() == device.lower()),
-            None
-        )
-
-        creds = read_creds()
-        switch_shortname = switch_sysname.split('.')[0] if switch_sysname and '.' in switch_sysname else switch_sysname
-        port_descr = lldp_summary.get(switch_sysname, {}).get("PortDescr", "") if switch_sysname else ""
-
-        # Try extracting shortname from PortDescr if available
-        match = re.match(r'([^-]+-[^-]+-\d+)', port_descr)
-        if match:
-            switch_shortname = match.group(1)
-
-        # Try to locate switch credentials in creds.yaml
-        switch_info = next((s for s in creds.get("switches", []) if s["name"] == switch_shortname), None)
-        retry = 'y'
-        if switch_info:
-            switch_user = switch_info["username"]
-            switch_pass = switch_info["password"]
-            print(f"Using credentials for switch {switch_sysname} from yaml file to log in.\n")
-        else:
-            print(f"Switch {switch_sysname} not found in creds.yaml. Please enter credentials manually.")
-            while True:
-                switch_user = input("Enter switch username: ").strip()
-                switch_pass = getpass.getpass("Enter switch password: ")
-
-                # Try test command to validate switch access
-                test_result = run_ssh_command(switch_sysname, switch_user, switch_pass, "show version")
-                if test_result == "AUTH_ERROR":
-                    print("Incorrect username or password.")
-                elif test_result is None:
-                    print("Could not connect to switch (check hostname or network).")
-                else:
-                    print("Switch login successful.\n")
-                    break
-
-                retry = input("Try logging in again? (y/n): ").strip().lower()
-                if retry != "y":
-                    print("Skipping switch-related tests.\n")
-                    switch_user = None
-                    switch_pass = None
-                    break
-
+        # Only do switch-based cable length lookup if needed
         if switch_user and switch_pass and port_descr:
-            print(f"Querying cable lengths and interfaces from switch {switch_shortname}...")
+            print(f"Attempting to get cable length from switch {switch_shortname} using port descr '{port_descr}'...")
             switch_cable_info = get_cable_length_from_switch(switch_shortname, switch_user, switch_pass, port_descr)
+
             if switch_cable_info:
-                print(f"Cable length reported by switch for port descr '{port_descr}': {switch_cable_info}")
+                print(f"Cable length reported by switch: {switch_cable_info}")
             else:
                 print("Failed to retrieve cable length info from switch.")
-    
-    match = re.search(r'(et|xe|ge)-\d+/\d+/\d+(?::\d+)?', port_descr)
 
+    # Final regex port match (you can use this for other diagnostics if needed)
+    match = re.search(r'(et|xe|ge)-\d+/\d+/\d+(?::\d+)?', port_descr)
     if retry == 'y':
         run_link_test = input("Run LLDP link down/up test? (y/n): ").strip().lower()
         if run_link_test == 'y':
@@ -1202,6 +1253,17 @@ def main():
                     print("FEC status looks good.\n")
         else:
             print("Skipping FEC status check.\n")
+
+    # Run traffic test
+    if retry == 'y':
+        lldp_output = run_ssh_command(switch_shortname, switch_user, switch_pass, f"cli -c 'show lldp neighbors detail'")
+        ipv4, ipv6 = parse_lldp_ips(lldp_output, port_descr)
+        traffic_test = input("Run traffic test? (y/n): ").strip().lower()
+        if traffic_test == 'y':
+            run_traffic_test(switch_shortname, server_user, server_pass, ipv4, ipv6)
+            print(f"\n===== Completed Traffic Test for {device} =====\n")
+        else:
+            print("Skipping traffic test.\n")
 
     
     
