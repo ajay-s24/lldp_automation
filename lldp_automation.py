@@ -59,7 +59,7 @@ def get_active_interfaces(host, username, password):
             interfaces.add(match.group(1))
     return sorted(interfaces)
 
-def check_fec_status(host, username, password, interface):
+def check_fec_status(host, username, password, iface):
     """
     Check FEC status for a given interface on a Juniper QFX switch via SSH.
     
@@ -67,11 +67,14 @@ def check_fec_status(host, username, password, interface):
         host (str): Hostname or IP of the switch
         username (str): SSH username
         password (str): SSH password
-        interface (str): Interface name, e.g. 'et-0/0/0:0'
+        iface (str): Interface name, e.g. 'et-0/0/0:0'
     
     Returns:
         dict: Parsed FEC info including mode, corrected errors, uncorrected errors, BER
     """
+    # Use only the base physical interface (remove :x if present)
+    interface = iface.split(":")[0]
+
     command = f'cli -c "show interfaces {interface} media"'
     output = run_ssh_command(host, username, password, command)
     if not output:
@@ -94,19 +97,19 @@ def check_fec_status(host, username, password, interface):
 
     # Parse lines
     for line in output.splitlines():
-        if not fec_info["fec_mode"]:
+        if fec_info["fec_mode"] is None:
             m = fec_mode_re.search(line)
             if m:
                 fec_info["fec_mode"] = m.group(1)
-        if not fec_info["corrected_errors"]:
+        if fec_info["corrected_errors"] is None:
             m = corrected_re.search(line)
             if m:
                 fec_info["corrected_errors"] = int(m.group(1))
-        if not fec_info["uncorrected_errors"]:
+        if fec_info["uncorrected_errors"] is None:
             m = uncorrected_re.search(line)
             if m:
                 fec_info["uncorrected_errors"] = int(m.group(1))
-        if not fec_info["pre_fec_ber"]:
+        if fec_info["pre_fec_ber"] is None:
             m = ber_re.search(line)
             if m:
                 try:
@@ -170,113 +173,129 @@ def parse_lldp_ips(lldp_output, port_descr):
 
 def get_tx_laser_disabled_alarm(host, username, password, interface):
     """
-    Fetch the 'Tx laser disabled alarm' state for a specific interface on the Juniper switch.
-
-    Args:
-        host (str): IP or hostname of the switch.
-        username (str): SSH username.
-        password (str): SSH password.
-        interface (str): Target interface string (may include hostname suffixes).
-
-    Returns:
-        str: 'On', 'Off', or 'Unknown'
+    Fetch the 'Tx laser disabled alarm' state for a specific interface.
+    If optics diagnostics not supported, fall back to physical link status.
     """
+    interface = interface.split(":")[0]
+    # Track if we've already warned during this run
+    if not hasattr(get_tx_laser_disabled_alarm, "_warning_printed"):
+        get_tx_laser_disabled_alarm._warning_printed = False
+
     try:
-        # Extract base interface (e.g., et-0/0/0:0 from full descriptor)
-        base_iface_match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/(\d+)(?::\d+)?', interface)
-        if not base_iface_match:
-            print(f"[WARN] Could not extract base interface from '{interface}'")
-            return "Unknown, optical diagnostics not supported"
-        base_iface = base_iface_match.group(0)
-
-        command = 'cli -c "show interfaces diagnostics optics | no-more"'
-        output = run_ssh_command(host, username, password, command)
-        if not output:
-            print("Empty output from optics diagnostics command.")
-            return "Unknown, optical diagnostics not supported"
-
-        lines = output.splitlines()
-        current_iface = None
-        in_target_iface_block = False
-        in_lane_section = False
-
-        for line in lines:
-            line = line.strip()
-
-            iface_match = re.match(r'^Physical interface:\s+(\S+)', line)
-            if iface_match:
-                current_iface_full = iface_match.group(1)
-                in_target_iface_block = (current_iface_full == base_iface)
-                in_lane_section = False
-                continue
-
-            if not in_target_iface_block:
-                continue
-
-            if re.match(r'^\s*Lane \d+', line):
-                in_lane_section = True
-                continue
-
-            if in_lane_section and 'Tx laser disabled alarm' in line:
-                state_match = re.search(r'Tx laser disabled alarm\s*:\s*(\S+)', line)
-                if state_match:
-                    return state_match.group(1)
-
-        return "Unknown, optical diagnostics not supported"
+        # Try optics diagnostics first
+        cmd_optics = f'cli -c "show interfaces diagnostics optics {interface} | no-more"'
+        output = run_ssh_command(host, username, password, cmd_optics)
+        if output:
+            if "not supported" not in output.lower():
+                for line in output.splitlines():
+                    if "Tx laser disabled alarm" in line:
+                        state_match = re.search(r'Tx laser disabled alarm\s*:\s*(\S+)', line)
+                        if state_match:
+                            return state_match.group(1)
+            else:
+                if not get_tx_laser_disabled_alarm._warning_printed:
+                    print(f"[WARNING] Optics diagnostics not supported on {interface}, falling back to physical link check.")
+                    get_tx_laser_disabled_alarm._warning_printed = True
+        else:
+            if not get_tx_laser_disabled_alarm._warning_printed:
+                print(f"[WARNING] No output from optics diagnostics on {interface}, falling back to physical link check.")
+                get_tx_laser_disabled_alarm._warning_printed = True
+        
+        # Fallback: check physical link status
+        cmd_phy = f'cli -c "show interfaces {interface} | match \\"Physical link\\""'
+        phy_output = run_ssh_command(host, username, password, cmd_phy)
+        if phy_output:
+            link_match = re.search(r'Physical link is\s*(Up|Down)', phy_output)
+            if link_match:
+                return link_match.group(1)
+            else:
+                print(f"Could not parse physical link status for {interface}")
+                return "Unknown"
+        else:
+            print(f"No output from physical link check for {interface}")
+            return "Unknown"
 
     except Exception as e:
         print(f"[ERROR] Exception while fetching laser alarm for {interface}: {e}")
-        return "Unknown, optical diagnostics not supported"
-
+        return "Unknown"
+    
 def laser_on_off_test(host, username, password, interface):
     """
     Perform laser ON/OFF validation test on a given switch interface.
-    """
-    print(f"\nStarting Laser ON/OFF test on interface {interface}")
 
-    # Extract base interface name (e.g., et-0/0/0:0)
-    base_iface_match = re.search(r'(?:ge|et|xe|lt)-\d+/\d+/\d+(?::\d+)?', interface)
-    if base_iface_match:
-        base_iface = base_iface_match.group(0)
-    else:
-        print("[ERROR] Could not extract base interface from interface string")
+    This uses CLI-PFE commands to toggle laser state and checks results using
+    show interfaces diagnostics optics, or falls back to physical link status.
+    """
+    print(f"\n===== Starting Laser ON/OFF test on {interface} =====\n")
+
+    # Extract base port from full interface string: et-0/0/0:0 -> et-0/0/0
+    base_iface_match = re.match(r'(et|ge|xe|lt)-\d+/\d+/\d+', interface)
+    if not base_iface_match:
+        print(f"[ERROR] Could not extract base port from '{interface}'")
         return False
 
-    # Step 1: Add temp config if not already present
-    temp_desc = "Laser test"
-    config_cmd = f'cli -c "configure; set interfaces {base_iface} description \\"{temp_desc}\\"; commit and-quit"'
-    run_ssh_command(host, username, password, config_cmd)
+    base_iface = base_iface_match.group(0)
 
-    # Step 2: Get pre-test alarm state
+    # Extract port number for CLI-PFE command
+    port_number_match = re.search(r'/(\d+)$', base_iface)
+    if not port_number_match:
+        print(f"[ERROR] Could not extract port number from base interface '{base_iface}'")
+        return False
+
+    port_number = port_number_match.group(1)
+
+    # Test laser/link state before changes
     before = get_tx_laser_disabled_alarm(host, username, password, interface)
-    print(f"[Before] Tx laser disabled alarm: {before}")
+    print(f"[Before] Laser/Link status: {before}")
 
-    # Step 3: Deactivate interface (simulate laser off)
-    deactivate_cmd = f'cli -c "configure; deactivate interfaces {base_iface}; commit and-quit"'
-    run_ssh_command(host, username, password, deactivate_cmd)
+    if before.lower() in ("unknown", "unknown, optical diagnostics not supported"):
+        print("Unable to determine initial laser/link state precisely.")
+
+    # CLI-PFE: Turn laser OFF
+    print(f"Turning laser OFF on {base_iface}...")
+    laser_off_cmd = f'cli-pfe -c "test picd optics fpc_slot 0 pic_slot 0 port {port_number} cmd laser-off"'
+    run_ssh_command(host, username, password, laser_off_cmd)
     time.sleep(3)
 
-    after_deactivate = get_tx_laser_disabled_alarm(host, username, password, interface)
-    print(f"[After Deactivate] Tx laser disabled alarm: {after_deactivate}")
+    after_off = get_tx_laser_disabled_alarm(host, username, password, interface)
+    print(f"[After OFF] Laser/Link status: {after_off}")
 
-    # Step 4: Reactivate interface (simulate laser on)
-    activate_cmd = f'cli -c "configure; activate interfaces {base_iface}; commit and-quit"'
-    run_ssh_command(host, username, password, activate_cmd)
+    # CLI-PFE: Turn laser ON
+    print(f"Turning laser ON on {base_iface}...")
+    laser_on_cmd = f'cli-pfe -c "test picd optics fpc_slot 0 pic_slot 0 port {port_number} cmd laser-on"'
+    run_ssh_command(host, username, password, laser_on_cmd)
     time.sleep(3)
 
-    after_reactivate = get_tx_laser_disabled_alarm(host, username, password, interface)
-    print(f"[After Reactivate] Tx laser disabled alarm: {after_reactivate}")
+    after_on = get_tx_laser_disabled_alarm(host, username, password, interface)
+    print(f"[After ON] Laser/Link status: {after_on}")
 
-    # Step 5: Clean up temp config
-    cleanup_cmd = f'cli -c "configure; delete interfaces {base_iface} description; commit and-quit"'
-    run_ssh_command(host, username, password, cleanup_cmd)
+    # Interpret results with fallback logic:
+    # For optics diagnostics: expected before="Off", after_off="On", after_on="Off"
+    # For physical link fallback: before="Up", after_off="Down", after_on="Up"
 
-    # Step 6: Final test evaluation
-    if before == 'Off' and after_deactivate == 'On' and after_reactivate == 'Off':
-        print(f"[PASS] Laser ON/OFF behavior validated successfully on {base_iface}\n")
+    def is_off(val):
+        return val.lower() == "off"
+
+    def is_on(val):
+        return val.lower() == "on"
+
+    def is_up(val):
+        return val.lower() == "up"
+
+    def is_down(val):
+        return val.lower() == "down"
+
+    passed = False
+    if (is_off(before) and is_on(after_off) and is_off(after_on)):
+        passed = True
+    elif (is_up(before) and is_down(after_off) and is_up(after_on)):
+        passed = True
+
+    if passed:
+        print(f"[PASS] Laser ON/OFF behavior validated successfully on {base_iface}")
         return True
     else:
-        print(f"[FAIL] Laser ON/OFF behavior NOT as expected on {base_iface} \n")
+        print(f"[FAIL] Laser ON/OFF behavior NOT as expected on {base_iface}")
         return False
 
 def get_alarms(host, username, password):
@@ -309,7 +328,9 @@ def soft_oir_on_interface(host, username, password, interface):
     run_ssh_command(host, username, password, 'cli -c "commit"')
 
 def soft_oir_all_ports(host, username, password):
-    print("\nCapturing alarms before Soft OIR...")
+    print("\n===== Starting Soft OIR on all active interfaces =====\n")
+
+    print("Capturing alarms before Soft OIR...")
     alarms_before = get_alarms(host, username, password)
 
     interfaces = get_active_interfaces(host, username, password)
@@ -381,9 +402,10 @@ def get_capable_speeds_from_pic(server_ip, username, password, port_num):
     return modes
 
 def test_channelization(server_ip, username, password, interface, port_num):
-    print(f"\n===== Channelization Test for {interface} =====")
-
+    
     parent_interface = re.sub(r':\d+$', '', interface) 
+
+    print(f"\n===== Channelization Test for {parent_interface} =====\n")
 
     # Step 1: Get original speed from child interface (et-0/0/0:0)
     try:
@@ -1143,7 +1165,12 @@ def main():
 
     # Default to "" to avoid NoneType errors
     port_descr = lldp_summary.get(switch_sysname, {}).get("PortDescr", "") if switch_sysname else ""
-
+    # Extract short interface name like et-0/0/2 or et-0/0/2:0 from port_descr
+    interface_match = re.search(r'(et|xe|ge|lt)-\d+/\d+/\d+(?::\d+)?', port_descr)
+    if interface_match:
+        short_interface = interface_match.group(0)
+    else:
+        short_interface = port_descr
     # Attempt to extract shortname from port description
     match = re.match(r'([^-]+-[^-]+-\d+)', port_descr)
     switch_shortname = match.group(1) if match else (switch_sysname.split('.')[0] if switch_sysname and '.' in switch_sysname else switch_sysname)
@@ -1191,8 +1218,8 @@ def main():
 
         # Only do switch-based cable length lookup if needed
         if switch_user and switch_pass and port_descr:
-            print(f"Attempting to get cable length from switch {switch_shortname} using port descr '{port_descr}'...")
-            switch_cable_info = get_cable_length_from_switch(switch_shortname, switch_user, switch_pass, port_descr)
+            print(f"Attempting to get cable length from switch {switch_shortname} using interface '{short_interface}'...")
+            switch_cable_info = get_cable_length_from_switch(switch_shortname, switch_user, switch_pass, short_interface)
 
             if switch_cable_info:
                 print(f"Cable length reported by switch: {switch_cable_info}")
@@ -1205,8 +1232,8 @@ def main():
         run_link_test = input("Run LLDP link down/up test? (y/n): ").strip().lower()
         if run_link_test == 'y':
             link_test_result = test_lldp_link_down_up(server_host, server_user, server_pass, device)
-            print(f"Overall test: {'PASSED' if link_test_result else 'FAILED'}.\n")
-            print(f"===== Completed LLDP link down/up test for {device} =====\n")
+            print(f"Overall test: {'PASSED' if link_test_result else 'FAILED'}.")
+            print(f"\n===== Completed LLDP link down/up test for {device} =====\n")
         else:
             print("\nSkipped LLDP link down/up test.\n")
     
@@ -1214,7 +1241,8 @@ def main():
     if retry == 'y':
         run_laser_test = input("Run laser on/off test for connected port? (y/n): ").strip().lower()
         if run_laser_test == 'y' and switch_user and switch_pass and port_descr:
-            laser_on_off_test(switch_shortname, switch_user, switch_pass, port_descr)
+            laser_on_off_test(switch_shortname, switch_user, switch_pass, short_interface)
+            print("\n===== Completed Laser On/Off Test =====\n")
         else:
             print("Skipping laser on/off test.\n")
 
@@ -1243,7 +1271,7 @@ def main():
     if retry == 'y':
         if input("\nRun FEC status check test? (y/n): ").lower().strip() == 'y':
             print("\nChecking FEC status for the selected interface...")
-            fec_status = check_fec_status(switch_shortname, server_user, server_pass, port_descr)
+            fec_status = check_fec_status(switch_shortname, server_user, server_pass, short_interface)
             if fec_status is None:
                 print("Failed to retrieve FEC status.\n")
             else:
@@ -1257,7 +1285,7 @@ def main():
     # Run traffic test
     if retry == 'y':
         lldp_output = run_ssh_command(switch_shortname, switch_user, switch_pass, f"cli -c 'show lldp neighbors detail'")
-        ipv4, ipv6 = parse_lldp_ips(lldp_output, port_descr)
+        ipv4, ipv6 = parse_lldp_ips(lldp_output, short_interface)
         traffic_test = input("Run traffic test? (y/n): ").strip().lower()
         if traffic_test == 'y':
             run_traffic_test(switch_shortname, server_user, server_pass, ipv4, ipv6)
@@ -1272,7 +1300,7 @@ def main():
     save_lldp_to_file(local_lldp)
 
     # Prompt user if they want to reboot the server and compare LLDP before/after reboot
-    should_reboot = input("\nReboot the server before LLDP comparison? (y/n): ").strip().lower()
+    should_reboot = input("\nReboot the server? (y/n): ").strip().lower()
     if should_reboot == 'y':
         reboot_server_ssh(server_host, server_user, server_pass)
 
