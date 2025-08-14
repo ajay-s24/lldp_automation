@@ -59,6 +59,142 @@ def get_active_interfaces(host, username, password):
             interfaces.add(match.group(1))
     return sorted(interfaces)
 
+def test_ae_lacp_bundle(local_switch, local_user, local_pass, local_iface):
+    """
+    Automatically configure AE bundle with LACP between a switch and its LLDP peer.
+    Picks AE ID and VLAN ID automatically, generates IPs, configures both ends, and verifies LACP.
+    """
+    print(f"\n=== Testing AE LACP Bundle on {local_switch} for interface {local_iface} ===\n")
+
+    # Step 1: Pick next available AE ID
+    config_output = run_ssh_command(local_switch, local_user, local_pass, "cli -c 'show configuration interfaces | match ae'")
+    existing_ae_ids = set(int(m.group(1)) for m in re.finditer(r'ae(\d+)', config_output))
+    ae_id = 1
+    while ae_id in existing_ae_ids and ae_id <= 127:
+        ae_id += 1
+    if ae_id > 127:
+        print("No available AE IDs.")
+        return False
+    ae_name = f"ae{ae_id}"
+    print(f"Selected AE ID: {ae_name}")
+
+    # Step 2: Pick next available VLAN ID
+    vlan_output = run_ssh_command(local_switch, local_user, local_pass, "cli -c 'show configuration vlans'")
+    used_vlans = set(int(m.group(1)) for m in re.finditer(r'vlan-id\s+(\d+)', vlan_output))
+    vlan_id = 2
+    while vlan_id in used_vlans and vlan_id <= 4094:
+        vlan_id += 1
+    if vlan_id > 4094:
+        print("No available VLAN IDs.")
+        return False
+    print(f"Selected VLAN ID: {vlan_id}")
+
+    # Step 3: Generate IPs
+    local_ip = f"11.0.{ae_id}.2/24"
+    peer_ip  = f"11.0.{ae_id}.1/24"
+    print(f"Assigned local IP {local_ip} and peer IP {peer_ip}")
+
+    # Step 4: Get peer info via LLDP CLI
+    lldp_output = run_ssh_command(
+        local_switch, local_user, local_pass,
+        f"cli -c 'show lldp neighbors interface {local_iface} detail'"
+    )
+
+    peer_sysname = None
+    peer_port = None
+    in_neighbor_section = False
+
+    for line in lldp_output.splitlines():
+        line = line.strip()
+        if line.startswith("Neighbor Information:"):
+            in_neighbor_section = True
+            continue
+        if in_neighbor_section:
+            if line.startswith("System name"):
+                peer_sysname = line.split(":", 1)[1].strip()
+            elif line.startswith("Port description"):
+                peer_port = line.split(":", 1)[1].strip()
+        if peer_sysname and peer_port:
+            break
+
+    if not peer_sysname or not peer_port:
+        print("Peer is likely a server NIC or not found; skipping peer configuration.")
+        peer_sysname = None
+        peer_port = None
+
+    print(f"Peer switch: {peer_sysname if peer_sysname else 'N/A'}, Peer port: {peer_port if peer_port else 'N/A'}")
+
+    # Step 5: Configure local switch (send all commands in one configure/commit block)
+    cmds_local = [
+        "set chassis aggregated-devices ethernet device-count 20",
+        f"set interfaces {local_iface} ether-options 802.3ad {ae_name}",
+        f"set interfaces {ae_name} description \"Link aggregation group {ae_id}\"",
+        f"set interfaces {ae_name} vlan-tagging",
+        f"set interfaces {ae_name} encapsulation flexible-ethernet-services",
+        f"set interfaces {ae_name} aggregated-ether-options lacp active",
+        f"set interfaces {ae_name} unit 0 vlan-id {vlan_id}",
+        f"set interfaces {ae_name} unit 0 family inet address {local_ip}"
+    ]
+    config_block = "; ".join(cmds_local)
+    commit_output = run_ssh_command(
+        local_switch, local_user, local_pass,
+        f"cli -c 'configure; {config_block}; commit and-quit'"
+    )
+
+    if commit_output:
+        commit_lower = commit_output.lower()
+        if "statements constraint check failed" in commit_lower:
+            print(f"\nCannot configure AE on {local_iface}: physical interface settings (like MTU or VLAN tagging) conflict with AE child rules.")
+            print("Skipping AE bundle configuration for this interface.\n")
+            return False
+        elif "error:" in commit_lower or "failed" in commit_lower:
+            print("\nCommit failed on local switch (unexpected error):")
+            print(commit_output)
+            return False
+        else:
+            print(f"Configured {local_iface} into {ae_name} on {local_switch} successfully.")
+    else:
+        print(f"Configured {local_iface} into {ae_name} on {local_switch} successfully.")
+
+    # Step 6: Configure peer switch if available
+    if peer_sysname and peer_port:
+        creds = read_creds()
+        peer_info = next((s for s in creds.get("switches", []) if s["name"] == peer_sysname.split('.')[0]), None)
+        if peer_info:
+            peer_user = peer_info["username"]
+            peer_pass = peer_info["password"]
+            cmds_peer = [
+                "set chassis aggregated-devices ethernet device-count 20",
+                f"set interfaces {peer_port} ether-options 802.3ad {ae_name}",
+                f"set interfaces {ae_name} description \"Link aggregation group {ae_id}\"",
+                f"set interfaces {ae_name} vlan-tagging",
+                f"set interfaces {ae_name} encapsulation flexible-ethernet-services",
+                f"set interfaces {ae_name} aggregated-ether-options lacp active",
+                f"set interfaces {ae_name} unit 0 vlan-id {vlan_id}",
+                f"set interfaces {ae_name} unit 0 family inet address {peer_ip}"
+            ]
+            peer_config_block = "; ".join(cmds_peer)
+            commit_output_peer = run_ssh_command(
+                peer_sysname, peer_user, peer_pass,
+                f"cli -c 'configure; {peer_config_block}; commit and-quit'"
+            )
+            if commit_output_peer and ("error:" in commit_output_peer.lower() or "failed" in commit_output_peer.lower()):
+                print("\nCommit failed on peer switch:")
+                print(commit_output_peer)
+            else:
+                print(f"Configured {peer_port} into {ae_name} on {peer_sysname} successfully.")
+
+    # Step 7: Verify LACP
+    print("\nLACP status on local switch:")
+    print(run_ssh_command(local_switch, local_user, local_pass, "cli -c 'show lacp interfaces'"))
+
+    if peer_sysname:
+        print("\nLACP status on peer switch:")
+        print(run_ssh_command(peer_sysname, peer_user, peer_pass, "cli -c 'show lacp interfaces'"))
+
+    print("\n=== AE LACP Bundle Test Completed ===\n")
+    return True
+
 def check_fec_status(host, username, password, iface):
     """
     Check FEC status for a given interface on a Juniper QFX switch via SSH.
@@ -1281,6 +1417,27 @@ def main():
                     print("FEC status looks good.\n")
         else:
             print("Skipping FEC status check.\n")
+
+    # Run AE Bundle test
+    if retry == 'y':
+        run_ae_test = input("\nRun AE Bundle test? (y/n): ").lower().strip()
+        if run_ae_test == 'y':
+            if not short_interface or not switch_user or not switch_pass:
+                print("Missing interface or switch credentials. Skipping AE Bundle test.\n")
+            else:
+                # Call the automation function using existing variables
+                success = test_ae_lacp_bundle(
+                    local_switch=switch_shortname,
+                    local_user=switch_user,
+                    local_pass=switch_pass,
+                    local_iface=short_interface
+                )
+                if success:
+                    print(f"\nCompleted AE Bundle + LACP Test on {short_interface} Successfully\n")
+                else:
+                    print(f"\nAE Bundle + LACP Test failed on {short_interface}.\n")
+        else:
+            print("Skipping AE Bundle test.\n")
 
     # Run traffic test
     if retry == 'y':
