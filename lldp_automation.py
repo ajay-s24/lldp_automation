@@ -62,11 +62,12 @@ def get_active_interfaces(host, username, password):
 def test_ae_lacp_bundle(local_switch, local_user, local_pass, local_iface):
     """
     Automatically configure AE bundle with LACP between a switch and its LLDP peer.
-    Picks AE ID and VLAN ID automatically, generates IPs, configures both ends, and verifies LACP.
+    Picks AE ID and VLAN ID automatically, generates IPs, configures the local switch,
+    tests if AE can be configured on that interface, then proceeds with peer config if applicable.
     """
     print(f"\n=== Testing AE LACP Bundle on {local_switch} for interface {local_iface} ===\n")
 
-    # Step 1: Pick next available AE ID
+    # Pick next available AE ID
     config_output = run_ssh_command(local_switch, local_user, local_pass, "cli -c 'show configuration interfaces | match ae'")
     existing_ae_ids = set(int(m.group(1)) for m in re.finditer(r'ae(\d+)', config_output))
     ae_id = 1
@@ -78,7 +79,7 @@ def test_ae_lacp_bundle(local_switch, local_user, local_pass, local_iface):
     ae_name = f"ae{ae_id}"
     print(f"Selected AE ID: {ae_name}")
 
-    # Step 2: Pick next available VLAN ID
+    # Pick next available VLAN ID
     vlan_output = run_ssh_command(local_switch, local_user, local_pass, "cli -c 'show configuration vlans'")
     used_vlans = set(int(m.group(1)) for m in re.finditer(r'vlan-id\s+(\d+)', vlan_output))
     vlan_id = 2
@@ -89,12 +90,41 @@ def test_ae_lacp_bundle(local_switch, local_user, local_pass, local_iface):
         return False
     print(f"Selected VLAN ID: {vlan_id}")
 
-    # Step 3: Generate IPs
+    # Generate IPs
     local_ip = f"11.0.{ae_id}.2/24"
     peer_ip  = f"11.0.{ae_id}.1/24"
     print(f"Assigned local IP {local_ip} and peer IP {peer_ip}")
 
-    # Step 4: Get peer info via LLDP CLI
+    # Try configuring AE locally first
+    print("\n--- Testing if AE can be configured locally on this interface ---")
+    cmds_local_test = [
+        "set chassis aggregated-devices ethernet device-count 20",
+        f"set interfaces {local_iface} ether-options 802.3ad {ae_name}",
+        f"set interfaces {ae_name} description \"Test Link aggregation group {ae_id}\"",
+        f"set interfaces {ae_name} aggregated-ether-options lacp active"
+    ]
+    test_block = "; ".join(cmds_local_test)
+    test_commit = run_ssh_command(
+        local_switch, local_user, local_pass,
+        f"cli -c 'configure; {test_block}; commit and-quit'"
+    )
+
+    if test_commit:
+        commit_lower = test_commit.lower()
+        if "statements constraint check failed" in commit_lower:
+            print(f"\nCannot configure AE on {local_iface} — MTU/VLAN tagging conflict.")
+            print("Skipping AE test for this interface.\n")
+            return False
+        elif "error:" in commit_lower or "failed" in commit_lower:
+            print("\nCommit failed during AE local test:")
+            print(test_commit)
+            return False
+        else:
+            print(f"AE local test configuration successful on {local_iface}.\n")
+    else:
+        print(f"AE local test configuration successful on {local_iface}.\n")
+
+    # Get peer info via LLDP CLI
     lldp_output = run_ssh_command(
         local_switch, local_user, local_pass,
         f"cli -c 'show lldp neighbors interface {local_iface} detail'"
@@ -124,7 +154,7 @@ def test_ae_lacp_bundle(local_switch, local_user, local_pass, local_iface):
 
     print(f"Peer switch: {peer_sysname if peer_sysname else 'N/A'}, Peer port: {peer_port if peer_port else 'N/A'}")
 
-    # Step 5: Configure local switch (send all commands in one configure/commit block)
+    # Configure local switch fully
     cmds_local = [
         "set chassis aggregated-devices ethernet device-count 20",
         f"set interfaces {local_iface} ether-options 802.3ad {ae_name}",
@@ -144,11 +174,10 @@ def test_ae_lacp_bundle(local_switch, local_user, local_pass, local_iface):
     if commit_output:
         commit_lower = commit_output.lower()
         if "statements constraint check failed" in commit_lower:
-            print(f"\nCannot configure AE on {local_iface}: physical interface settings (like MTU or VLAN tagging) conflict with AE child rules.")
-            print("Skipping AE bundle configuration for this interface.\n")
+            print(f"\nCannot configure AE on {local_iface} (full config stage).")
             return False
         elif "error:" in commit_lower or "failed" in commit_lower:
-            print("\nCommit failed on local switch (unexpected error):")
+            print("\nCommit failed on local switch (full config stage):")
             print(commit_output)
             return False
         else:
@@ -156,7 +185,7 @@ def test_ae_lacp_bundle(local_switch, local_user, local_pass, local_iface):
     else:
         print(f"Configured {local_iface} into {ae_name} on {local_switch} successfully.")
 
-    # Step 6: Configure peer switch if available
+    # Configure peer switch if available
     if peer_sysname and peer_port:
         creds = read_creds()
         peer_info = next((s for s in creds.get("switches", []) if s["name"] == peer_sysname.split('.')[0]), None)
@@ -184,7 +213,7 @@ def test_ae_lacp_bundle(local_switch, local_user, local_pass, local_iface):
             else:
                 print(f"Configured {peer_port} into {ae_name} on {peer_sysname} successfully.")
 
-    # Step 7: Verify LACP
+    # Verify LACP
     print("\nLACP status on local switch:")
     print(run_ssh_command(local_switch, local_user, local_pass, "cli -c 'show lacp interfaces'"))
 
