@@ -68,7 +68,8 @@ def test_ae_lacp_bundle(local_switch, local_user, local_pass, local_iface):
     print(f"\n=== Testing AE LACP Bundle on {local_switch} for interface {local_iface} ===\n")
 
     # Pick next available AE ID
-    config_output = run_ssh_command(local_switch, local_user, local_pass, "cli -c 'show configuration interfaces | match ae'")
+    config_output = run_ssh_command(local_switch, local_user, local_pass,
+                                    "cli -c 'show configuration interfaces | match ae'")
     existing_ae_ids = set(int(m.group(1)) for m in re.finditer(r'ae(\d+)', config_output))
     ae_id = 1
     while ae_id in existing_ae_ids and ae_id <= 127:
@@ -95,8 +96,37 @@ def test_ae_lacp_bundle(local_switch, local_user, local_pass, local_iface):
     peer_ip  = f"11.0.{ae_id}.1/24"
     print(f"Assigned local IP {local_ip} and peer IP {peer_ip}")
 
+    # Cleanup interface before AE attach
+    print("\n--- Cleaning up interface before AE attach ---")
+    iface_check = run_ssh_command(local_switch, local_user, local_pass,
+                                  f"cli -c 'show configuration interfaces {local_iface}'")
+    if "unit 0" in iface_check:
+        print(f"Found unit 0 under {local_iface}, removing...")
+        cleanup_cmds = [
+            f"delete interfaces {local_iface} unit 0",
+        ]
+        # also check if referenced in routing-instances
+        ri_check = run_ssh_command(local_switch, local_user, local_pass,
+                                   f"cli -c 'show configuration routing-instances | display set | match {local_iface}'")
+        if ri_check.strip():
+            print(f"Found {local_iface} in routing-instances, cleaning up...")
+            for line in ri_check.splitlines():
+                cleanup_cmds.append(f"delete {line.strip().replace('set ', '')}")
+
+        cleanup_block = "; ".join(cleanup_cmds)
+        cleanup_out = run_ssh_command(local_switch, local_user, local_pass,
+                                      f"cli -c 'configure; {cleanup_block}; commit and-quit'")
+        if "error:" in (cleanup_out or "").lower():
+            print("Failed to cleanup interface before AE attach:")
+            print(cleanup_out)
+            return False
+        else:
+            print("Cleanup successful.\n")
+    else:
+        print("No unit 0 found, continuing.\n")
+
     # Try configuring AE locally first
-    print("\n--- Testing if AE can be configured locally on this interface ---")
+    print("--- Testing if AE can be configured locally on this interface ---")
     cmds_local_test = [
         "set chassis aggregated-devices ethernet device-count 20",
         f"set interfaces {local_iface} ether-options 802.3ad {ae_name}",
@@ -221,6 +251,9 @@ def test_ae_lacp_bundle(local_switch, local_user, local_pass, local_iface):
         print("\nLACP status on peer switch:")
         print(run_ssh_command(peer_sysname, peer_user, peer_pass, "cli -c 'show lacp interfaces'"))
 
+    # Cleanup AE configuration
+    run_ssh_command(local_switch, local_user, local_pass, f"cli -c 'configure; delete interfaces {ae_name}; commit and-quit'")
+
     print("\n=== AE LACP Bundle Test Completed ===\n")
     return True
 
@@ -290,6 +323,54 @@ def check_fec_status(host, username, password, iface):
     print(f"  PRE FEC BER: {fec_info['pre_fec_ber']}\n")
 
     return fec_info
+
+def test_fec_modes(host, username, password, iface):
+    """
+    Test configuring different FEC modes on a Juniper interface and verify status.
+
+    Args:
+        host (str): Hostname or IP of the switch
+        username (str): SSH username
+        password (str): SSH password
+        iface (str): Interface name, e.g. 'et-0/0/63:0'
+    """
+    interface = iface.split(":")[0]
+
+    print(f"=== Starting FEC mode tests on {interface} ===\n")
+
+    fec_modes = ["fec74", "fec91", "none"]
+
+    # Save original config so we can restore
+    print("Saving original configuration...")
+    run_ssh_command(host, username, password,
+                    f"cli -c 'show configuration interfaces {iface}'")
+    run_ssh_command(host, username, password,
+                    "cli -c 'show configuration | display set' > /var/tmp/orig_fec.conf")
+
+    for mode in fec_modes:
+        print(f"\n--- Testing FEC mode: {mode} ---")
+
+        # Configure FEC mode
+        cmd_set = f"cli -c 'configure; set interfaces {iface} ether-options fec {mode}; commit and-quit'"
+        run_ssh_command(host, username, password, cmd_set)
+
+        # Verify
+        status = check_fec_status(host, username, password, iface)
+        if status and status.get("fec_mode"):
+            actual_mode = status["fec_mode"].lower()
+            if mode in actual_mode:
+                print(f"[PASS] Expected: {mode}, Got: {actual_mode}")
+            else:
+                print(f"[FAIL] Expected: {mode}, Got: {actual_mode}")
+        else:
+            print(f"[FAIL] Could not verify FEC mode {mode}")
+
+    # Restore original config
+    print("\nRestoring original configuration...")
+    run_ssh_command(host, username, password,
+                    "cli -c 'configure; rollback 0; commit and-quit'")
+
+    print("\n=== Completed FEC mode tests ===\n")
 
 def run_traffic_test(server_host, server_user, server_pass, ipv4=None, ipv6=None, count=5):
     print("\n=== Traffic Test ===")
@@ -1097,25 +1178,9 @@ def wait_for_host_ssh(host, username, password, timeout=600, interval=10):
     print(f"Timed out waiting for {host} to come back online.")
     return False
 
-def remove_age_fields(obj):
-    """
-    Recursively remove 'age' fields from nested JSON objects.
-
-    Args:
-        obj (dict or list): LLDP data.
-
-    Returns:
-        Cleaned object without 'age' fields.
-    """
-    if isinstance(obj, dict):
-        return {k: remove_age_fields(v) for k, v in obj.items() if k != "age"}
-    elif isinstance(obj, list):
-        return [remove_age_fields(i) for i in obj]
-    return obj
-
 def compare_lldp_before_after(server_host, server_user, server_pass, interface):
     """
-    Compare LLDP info from before and after reboot.
+    Compare LLDP info from before and after reboot, including 'age' fields.
 
     Args:
         server_host (str): Server hostname.
@@ -1135,19 +1200,15 @@ def compare_lldp_before_after(server_host, server_user, server_pass, interface):
         print("Failed to retrieve LLDP data after reboot.")
         return
 
-    # Strip age fields
-    before_stripped = remove_age_fields(before_data)
-    after_stripped = remove_age_fields(after_data)
+    # Convert to formatted JSON strings (including age fields)
+    before_str = json.dumps(before_data, indent=2, sort_keys=True)
+    after_str = json.dumps(after_data, indent=2, sort_keys=True)
 
-    # Convert to formatted JSON strings
-    before_str = json.dumps(before_stripped, indent=2, sort_keys=True)
-    after_str = json.dumps(after_stripped, indent=2, sort_keys=True)
-
-    # Compare ignoring 'age' fields
+    # Compare full LLDP JSON
     if before_str == after_str:
-        print("LLDP data matches before and after reboot (ignoring 'age').")
+        print("LLDP data matches before and after reboot (including 'age').")
     else:
-        print("LLDP data has changed after reboot (ignoring 'age'). Differences:")
+        print("LLDP data has changed after reboot. Differences:")
         diff = difflib.unified_diff(
             before_str.splitlines(),
             after_str.splitlines(),
@@ -1215,7 +1276,7 @@ def main():
        falls back to querying the switch.
     8. Saves LLDP data before reboot.
     9. Optionally reboots the server and waits for it to come back online.
-    10. Retrieves and compares LLDP data before and after reboot, ignoring 'age' fields.
+    10. Retrieves and compares LLDP data before and after reboot
 
     This script requires the server and switch to support SSH connections and
     the necessary commands (`lldpcli`, `ethtool`, JunOS CLI).
@@ -1432,20 +1493,13 @@ def main():
         else:
             print(f"Failed to extract interface from port description: {port_descr}")
 
-    # Run FEC status check
+    # Run FEC test
     if retry == 'y':
-        if input("\nRun FEC status check test? (y/n): ").lower().strip() == 'y':
-            print("\nChecking FEC status for the selected interface...")
-            fec_status = check_fec_status(switch_shortname, server_user, server_pass, short_interface)
-            if fec_status is None:
-                print("Failed to retrieve FEC status.\n")
-            else:
-                if fec_status.get("uncorrected_errors", 0) > 0:
-                    print("WARNING: Uncorrected FEC errors detected!\n")
-                else:
-                    print("FEC status looks good.\n")
+        if input("\nRun FEC test (configure + verify)? (y/n): ").lower().strip() == 'y':
+            print("\nStarting FEC mode test on the selected interface...")
+            test_fec_modes(switch_shortname, server_user, server_pass, short_interface)
         else:
-            print("Skipping FEC status check.\n")
+            print("Skipping FEC test.\n")
 
     # Run AE Bundle test
     if retry == 'y':
@@ -1505,7 +1559,7 @@ def main():
             print("Failed to retrieve LLDP data after reboot.") 
             return
         
-        # Compare LLDP data before and after reboot, ignoring 'age' fields
+        # Compare LLDP data before and after reboot
         compare_lldp_before_after(server_host, server_user, server_pass, device)
 
 if __name__ == '__main__':
