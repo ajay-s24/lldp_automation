@@ -19,7 +19,15 @@ servers:
     username: root
     password: Embe1mpls
   
+  - name: svl-hp-ai-srv02
+    username: root
+    password: Embe1mpls
+
   - name: svl-hp-ai-srv03
+    username: root
+    password: Embe1mpls
+
+  - name: svl-hp-ai-srv04
     username: root
     password: Embe1mpls
 
@@ -33,5 +41,9 @@ switches:
     password: Embe1mpls
 
   - name: ny-q5130-04
+    username: root
+    password: Embe1mpls
+
+  - name: ny-q5240-13
     username: root
     password: Embe1mpls
