@@ -28,7 +28,7 @@ Note: The AE Bundle/LACP test only verifies the switch-side configuration, not t
   - Channelization test
   - FEC mode test
   - AE Bundle/LACP test
-  - Traffic test (currently requires implementation)
+  - Traffic test for IPv4 and IPv6
 - Server/Switch Login Handling: Can use stored credentials from a YAML file or prompt for credentials manually.
 
 
@@ -60,7 +60,7 @@ The script will prompt you to enter:
   - test_channelization(): Tests various channelization modes by validating that sub-interfaces can be created and work properly at various lane/speed configurations
   - test_fec_modes(): Configures various FEC and checks interface status
   - test_ae_lacp_bundle() (switch-side only, needs server-side implementation): Configures AE bundle and enables LACP
-  - run_traffic_test() (working on implementing): Runs traffic test for ipv4 and ipv6
+  - run_traffic_test(): Runs traffic test for ipv4 and ipv6
 
 ## Example Output
 
