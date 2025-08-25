@@ -333,7 +333,7 @@ def run_traffic_test(server_host, server_user, server_pass, device,
     print(f"Device {device} IPv4: {ipv4_addr or 'None'}, IPv6: {ipv6_addr or 'None'}")
 
     # Step 1: Copy ~/OSTG_KR from src_host to server_host using sshpass on the source
-    print(f"Copying ~/OSTG_KR from {src_host} → {server_host} ...")
+    print(f"Copying ~/OSTG_KR from {src_host} to {server_host} ...")
     if not scp_with_ssh(src_host, server_host, src_user, src_pass):
         print("Failed to copy ~/OSTG_KR from source to destination. Aborting traffic test.")
         return
