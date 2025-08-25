@@ -1,49 +1,20 @@
+global:
+  username: root
+  password: Embe1mpls
+
 servers:
   - name: svl-d-ai-srv01
-    username: root
-    password: Embe1mpls
-
   - name: svl-d-ai-srv02
-    username: root
-    password: Embe1mpls
-
   - name: svl-d-ai-srv03
-    username: root
-    password: Embe1mpls
-
   - name: svl-d-ai-srv04
-    username: root
-    password: Embe1mpls
-
   - name: svl-hp-ai-srv01
-    username: root
-    password: Embe1mpls
-  
   - name: svl-hp-ai-srv02
-    username: root
-    password: Embe1mpls
-
   - name: svl-hp-ai-srv03
-    username: root
-    password: Embe1mpls
-
   - name: svl-hp-ai-srv04
-    username: root
-    password: Embe1mpls
 
 switches:
   - name: ny-q5230-04
-    username: root
-    password: Embe1mpls
-
   - name: ny-q5130-03
-    username: root
-    password: Embe1mpls
-
   - name: ny-q5130-04
-    username: root
-    password: Embe1mpls
-
   - name: ny-q5240-13
-    username: root
-    password: Embe1mpls
+  - name: san-q5130e-04
