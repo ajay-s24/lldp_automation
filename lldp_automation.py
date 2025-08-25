@@ -588,15 +588,27 @@ def soft_oir_all_ports(host, username, password):
         for line in diff:
             print(line)
 
-def select_server(servers):
+def select_server(servers, global_user, global_pass):
     print("Available servers:")
     for idx, srv in enumerate(servers, 1):
         print(f"{idx}: {srv['name']}")
+    print(f"{len(servers)+1}: Enter manually")
+
     choice = input("Select server number: ").strip()
-    if not choice.isdigit() or int(choice) < 1 or int(choice) > len(servers):
+    if not choice.isdigit() or int(choice) < 1 or int(choice) > len(servers)+1:
         print("Invalid choice.")
         return None
-    return servers[int(choice) - 1]
+
+    if int(choice) == len(servers)+1:
+        # Manual entry uses global creds
+        name = input("Enter server name: ").strip()
+        return {
+            "name": name,
+            "username": global_user,
+            "password": global_pass
+        }
+    else:
+        return servers[int(choice)-1]
 
 def select_test_menu():
     """
@@ -1281,18 +1293,19 @@ def main():
 
     print(f"NIC String from config: '{nic_string_from_conf}'")
 
+    # Load credentials
     creds = read_creds()
+    global_user = creds["global"]["username"]
+    global_pass = creds["global"]["password"]
 
     # Step 1: Select server at start
     server = None
     while not server:
-        server = select_server(creds.get('servers', []))
+        server = select_server(creds.get("servers", []), global_user, global_pass)
+
     print(f"Selected server: {server['name']}")
 
-    # Use server credentials here for SSH etc.
     server_host = server['name']
-    server_user = server['username']
-    server_pass = server['password']
 
     # Prompt for NIC match string, fallback to config if empty
     user_match_string = input(f"Enter NIC match string (default '{nic_string_from_conf}'): ").strip()
@@ -1303,7 +1316,7 @@ def main():
             return
 
     # Get interfaces and IPs matching NIC string
-    iface_ip_map = get_interfaces_and_ips(server_host, server_user, server_pass, user_match_string)
+    iface_ip_map = get_interfaces_and_ips(server_host, global_user, global_pass, user_match_string)
     if not iface_ip_map:
         return
 
@@ -1325,7 +1338,7 @@ def main():
     print(f"Selected device: {device}")
 
     # Retrieve LLDP data for the selected interface
-    local_lldp = get_lldp_neighbors_local_ssh(server_host, server_user, server_pass, device)
+    local_lldp = get_lldp_neighbors_local_ssh(server_host, global_user, global_pass, device)
     if not local_lldp:
         print(f"No LLDP data found for interface {device}")
         return
@@ -1359,7 +1372,7 @@ def main():
         print(f"Local NIC MAC: {local_mac}")
     
     # Retrieve summary of LLDP neighbors with interface and port description
-    lldp_summary = get_lldp_neighbors_summary_ssh(server_host, server_user, server_pass, target_interface=device)
+    lldp_summary = get_lldp_neighbors_summary_ssh(server_host, global_user, global_pass, target_interface=device)
     if lldp_summary:
         print(f"Connected switch info for {device}:")
         for sysname, data in lldp_summary.items():
@@ -1370,7 +1383,7 @@ def main():
         print("No LLDP neighbor summary data found.")
 
     # Attempt ethtool cable length retrieval
-    cable_len = get_cable_length_ssh(server_host, server_user, server_pass, device, user_match_string)
+    cable_len = get_cable_length_ssh(server_host, global_user, global_pass, device, user_match_string)
 
     # Lookup LLDP summary to get switch sysname and port description
     switch_sysname = next(
@@ -1395,12 +1408,10 @@ def main():
     creds = read_creds()
     switch_info = next((s for s in creds.get("switches", []) if s["name"] == switch_shortname), None)
 
-    switch_user = None
-    switch_pass = None
+    switch_user = global_user
+    switch_pass = global_pass
 
     if switch_info:
-        switch_user = switch_info["username"]
-        switch_pass = switch_info["password"]
         print(f"Using credentials for switch {switch_sysname} from yaml file to log in.\n")
     else:
         print(f"Switch {switch_sysname} not found in creds.yaml. Please enter credentials manually.")
@@ -1448,7 +1459,7 @@ def main():
             test_choice = select_test_menu()
 
             if test_choice == 1:
-                link_test_result = test_lldp_link_down_up(server_host, server_user, server_pass, device)
+                link_test_result = test_lldp_link_down_up(server_host, global_user, global_pass, device)
                 print(f"Overall test: {'PASSED' if link_test_result else 'FAILED'}.")
                 print(f"\n===== Completed LLDP link down/up test for {device} =====\n")
 
@@ -1465,7 +1476,7 @@ def main():
 
             elif test_choice == 4:
                 print("\nStarting FEC mode test on the selected interface...")
-                test_fec_modes(switch_shortname, server_user, server_pass, short_interface)
+                test_fec_modes(switch_shortname, global_user, global_pass, short_interface)
 
             elif test_choice == 5:
                 if not short_interface or not switch_user or not switch_pass:
@@ -1491,7 +1502,7 @@ def main():
                     print(f"Failed to extract interface from port description: {port_descr}")
 
             elif test_choice == 7:
-                run_traffic_test(server_host, server_user, server_pass, device)
+                run_traffic_test(server_host, global_user, global_pass, device)
 
             elif test_choice == 8:
                 print("\n=== Exiting program. ===")
@@ -1507,10 +1518,10 @@ def main():
     # Prompt user if they want to reboot the server and compare LLDP before/after reboot
     should_reboot = input("\nReboot the server? (y/n): ").strip().lower()
     if should_reboot == 'y':
-        reboot_server_ssh(server_host, server_user, server_pass)
+        reboot_server_ssh(server_host, global_user, global_pass)
 
         # Wait for SSH to become available again after reboot
-        if not wait_for_host_ssh(server_host, server_user, server_pass):
+        if not wait_for_host_ssh(server_host, global_user, global_pass):
             return
 
         # Wait additional time for LLDP daemons to start after SSH is ready
@@ -1519,13 +1530,13 @@ def main():
 
         # Retrieve LLDP data after reboot with retries
         print("Trying to retrieve LLDP data after reboot with retries...")
-        lldp_after = wait_for_lldp_ready(server_host, server_user, server_pass, device)
+        lldp_after = wait_for_lldp_ready(server_host, global_user, global_pass, device)
         if not lldp_after:
             print("Failed to retrieve LLDP data after reboot.") 
             return
         
         # Compare LLDP data before and after reboot
-        compare_lldp_before_after(server_host, server_user, server_pass, device)
-
+        compare_lldp_before_after(server_host, global_user, global_pass, device)
+        
 if __name__ == '__main__':
     main()
