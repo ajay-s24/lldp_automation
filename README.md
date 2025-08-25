@@ -75,6 +75,7 @@ Available servers:
 6: svl-hp-ai-srv02
 7: svl-hp-ai-srv03
 8: svl-hp-ai-srv04
+9: Enter manually
 Select server number: 4
 Selected server: svl-d-ai-srv04
 Enter NIC match string (default 'Broadcom Inc. and subsidiaries'): 
@@ -93,7 +94,17 @@ ny-q5230-04.englab.juniper.net:
 Using credentials for switch ny-q5230-04.englab.juniper.net from yaml file to log in.
 
 Cable assembly length for enp13s0np0: 2.50m
-Run LLDP link down/up test? (y/n): y
+
+Select a test to run:
+1: LLDP link down/up test
+2: Laser On/Off test (If optics diagnostics supported)
+3: Soft OIR test (All ports, ~5-10 min)
+4: FEC test
+5: AE Bundle + LACP test (Switch-side only, server-side needs implementation)
+6: Channelization test (~5-10 min)
+7: Traffic test (IPv4/IPv6)
+8: Exit program (w/ option to reboot server)
+Enter choice number: 1
 
 === Testing LLDP behavior for interface 'enp13s0np0' ===
 
@@ -113,7 +124,16 @@ Overall test: PASSED.
 
 ===== Completed LLDP link down/up test for enp13s0np0 =====
 
-Run laser on/off test for connected port? (y/n): y
+Select a test to run:
+1: LLDP link down/up test
+2: Laser On/Off test (If optics diagnostics supported)
+3: Soft OIR test (All ports, ~5-10 min)
+4: FEC test
+5: AE Bundle + LACP test (Switch-side only, server-side needs implementation)
+6: Channelization test (~5-10 min)
+7: Traffic test (IPv4/IPv6)
+8: Exit program (w/ option to reboot server)
+Enter choice number: 2
 
 ===== Starting Laser ON/OFF test on et-0/0/56 =====
 
@@ -127,7 +147,16 @@ Turning laser ON on et-0/0/56...
 
 ===== Completed Laser On/Off Test =====
 
-Run Soft OIR test on all ports? Test time for all ports ~5 to 10 minutes (y/n): y
+Select a test to run:
+1: LLDP link down/up test
+2: Laser On/Off test (If optics diagnostics supported)
+3: Soft OIR test (All ports, ~5-10 min)
+4: FEC test
+5: AE Bundle + LACP test (Switch-side only, server-side needs implementation)
+6: Channelization test (~5-10 min)
+7: Traffic test (IPv4/IPv6)
+8: Exit program (w/ option to reboot server)
+Enter choice number: 3
 
 ===== Starting Soft OIR on all active interfaces =====
 
@@ -300,7 +329,16 @@ No change in alarms after Soft OIR.
 
 ===== Completed Soft OIR Test for all ports =====
 
-Run channelization test? Test time ~5 to 10 minutes (y/n): y
+Select a test to run:
+1: LLDP link down/up test
+2: Laser On/Off test (If optics diagnostics supported)
+3: Soft OIR test (All ports, ~5-10 min)
+4: FEC test
+5: AE Bundle + LACP test (Switch-side only, server-side needs implementation)
+6: Channelization test (~5-10 min)
+7: Traffic test (IPv4/IPv6)
+8: Exit program (w/ option to reboot server)
+Enter choice number: 6
 
 ===== Channelization Test for et-0/0/56 =====
 
@@ -423,7 +461,16 @@ et-0/0/56:0.16386       up    down multiservice
 ===== Completed Channelization Test for et-0/0/56 =====
 
 
-Run FEC test (configure + verify)? (y/n): y
+Select a test to run:
+1: LLDP link down/up test
+2: Laser On/Off test (If optics diagnostics supported)
+3: Soft OIR test (All ports, ~5-10 min)
+4: FEC test
+5: AE Bundle + LACP test (Switch-side only, server-side needs implementation)
+6: Channelization test (~5-10 min)
+7: Traffic test (IPv4/IPv6)
+8: Exit program (w/ option to reboot server)
+Enter choice number: 4
 
 Starting FEC mode test on the selected interface...
 === Starting FEC mode tests on et-0/0/56 ===
@@ -462,7 +509,16 @@ Restoring original configuration...
 === Completed FEC mode tests ===
 
 
-Run AE Bundle test? (y/n): y
+Select a test to run:
+1: LLDP link down/up test
+2: Laser On/Off test (If optics diagnostics supported)
+3: Soft OIR test (All ports, ~5-10 min)
+4: FEC test
+5: AE Bundle + LACP test (Switch-side only, server-side needs implementation)
+6: Channelization test (~5-10 min)
+7: Traffic test (IPv4/IPv6)
+8: Exit program (w/ option to reboot server)
+Enter choice number: 5
 
 === Testing AE LACP Bundle on ny-q5230-04 for interface et-0/0/56 ===
 
@@ -494,7 +550,16 @@ Cleaning up AE configuration...
 
 Completed AE Bundle + LACP Test on et-0/0/56 Successfully
 
-Run traffic test? (y/n): y
+Select a test to run:
+1: LLDP link down/up test
+2: Laser On/Off test (If optics diagnostics supported)
+3: Soft OIR test (All ports, ~5-10 min)
+4: FEC test
+5: AE Bundle + LACP test (Switch-side only, server-side needs implementation)
+6: Channelization test (~5-10 min)
+7: Traffic test (IPv4/IPv6)
+8: Exit program (w/ option to reboot server)
+Enter choice number: 7
 
 === Traffic Test for Device: enp13s0np0 ===
 Device enp13s0np0 IPv4: 10.200.10.29, IPv6: fe80::966d:aeff:fed4:6c46
@@ -512,6 +577,16 @@ Traffic test PASSED for both IPv4 and IPv6.
 
 ===== Completed Traffic Test for enp13s0np0 =====
 
+Select a test to run:
+1: LLDP link down/up test
+2: Laser On/Off test (If optics diagnostics supported)
+3: Soft OIR test (All ports, ~5-10 min)
+4: FEC test
+5: AE Bundle + LACP test (Switch-side only, server-side needs implementation)
+6: Channelization test (~5-10 min)
+7: Traffic test (IPv4/IPv6)
+8: Exit program (w/ option to reboot server)
+Enter choice number: 8
 
 Saving LLDP data before reboot...
 
