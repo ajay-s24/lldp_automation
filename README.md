@@ -23,7 +23,7 @@ Note: The AE Bundle/LACP test currently only configures and verifies the local s
 - Performs LLDP link down/up tests remotely
 - Optional Tests:
   - LLDP link down/up test
-  - Laser on/off test (switch-side)
+  - Laser on/off test (switch-side, if optics diagnostics are present)
   - Soft OIR test on all ports
   - Channelization test
   - FEC mode test
