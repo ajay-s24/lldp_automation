@@ -59,6 +59,8 @@ def get_active_interfaces(host, username, password):
             interfaces.add(match.group(1))
     return sorted(interfaces)
 
+
+
 def test_ae_lacp_bundle(local_switch, local_user, local_pass, local_iface):
     print(f"\n=== Testing AE LACP Bundle on {local_switch} for interface {local_iface} ===\n")
 
@@ -595,6 +597,32 @@ def select_server(servers):
         print("Invalid choice.")
         return None
     return servers[int(choice) - 1]
+
+def select_test_menu():
+    """
+    Display a numbered menu of tests and return the selected test.
+    """
+    tests = [
+        "LLDP link down/up test",
+        "Laser On/Off test (If optics diagnostics supported)",
+        "Soft OIR test (All ports, ~5-10 min)",
+        "FEC test",
+        "AE Bundle + LACP test (Switch-side only, server-side needs implementation)",
+        "Channelization test (~5-10 min)",
+        "Traffic test (IPv4/IPv6)",
+        "Exit program (w/ option to reboot server)"
+    ]
+
+    print("\nSelect a test to run:")
+    for i, test in enumerate(tests, 1):
+        print(f"{i}: {test}")
+
+    while True:
+        choice = input("Enter choice number: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(tests):
+            return int(choice)
+        else:
+            print(f"Invalid choice. Enter a number between 1 and {len(tests)}.")
 
 def get_switch_creds(switches, switch_name):
     for switch in switches:
@@ -1247,27 +1275,7 @@ def wait_for_lldp_ready(server_host, server_user, server_pass, interface, timeou
     return None
 
 def main():
-    """
-    Main entry point for the NIC and LLDP diagnostics script.
 
-    This function performs the following steps:
-    1. Reads NIC match string from a configuration file.
-    2. Prompts the user for server credentials and NIC match string (just click 'enter' to go ahead with default match string).
-    3. Retrieves interfaces and their IP addresses matching the NIC string.
-    4. Allows the user to select a device if multiple matches are found.
-    5. Retrieves LLDP neighbor data for the selected interface.
-    6. Displays LLDP neighbor and switch management IP info.
-    7. Attempts to retrieve cable length info using ethtool. If unavailable,
-       falls back to querying the switch.
-    8. Saves LLDP data before reboot.
-    9. Optionally reboots the server and waits for it to come back online.
-    10. Retrieves and compares LLDP data before and after reboot
-
-    This script requires the server and switch to support SSH connections and
-    the necessary commands (`lldpcli`, `ethtool`, JunOS CLI).
-
-    User input is required for server and switch login credentials, and NIC match strings.
-    """
     config = read_config()
     nic_string_from_conf = config.get("NIC String", "")
 
@@ -1436,80 +1444,58 @@ def main():
     # Final regex port match (you can use this for other diagnostics if needed)
     match = re.search(r'(et|xe|ge)-\d+/\d+/\d+(?::\d+)?', port_descr)
     if retry == 'y':
-        run_link_test = input("Run LLDP link down/up test? (y/n): ").strip().lower()
-        if run_link_test == 'y':
-            link_test_result = test_lldp_link_down_up(server_host, server_user, server_pass, device)
-            print(f"Overall test: {'PASSED' if link_test_result else 'FAILED'}.")
-            print(f"\n===== Completed LLDP link down/up test for {device} =====\n")
-        else:
-            print("\nSkipped LLDP link down/up test.\n")
-    
-    # Run laser on/off test
-    if retry == 'y':
-        run_laser_test = input("Run laser on/off test for connected port? (y/n): ").strip().lower()
-        if run_laser_test == 'y' and switch_user and switch_pass and port_descr:
-            laser_on_off_test(switch_shortname, switch_user, switch_pass, short_interface)
-            print("\n===== Completed Laser On/Off Test =====\n")
-        else:
-            print("Skipping laser on/off test.\n")
+        while True:
+            test_choice = select_test_menu()
 
-    # Run soft OIR test on all ports
-    if retry == 'y':
-        run_soft_oir = input("Run Soft OIR test on all ports? Test time for all ports ~5 to 10 minutes (y/n): ").strip().lower()
-        if run_soft_oir == 'y':
-            soft_oir_all_ports(switch_sysname, switch_user, switch_pass)
-            print(f"\n===== Completed Soft OIR Test for all ports =====\n")
-        else:
-            print("Skipping Soft OIR test on all ports.\n")
+            if test_choice == 1:
+                link_test_result = test_lldp_link_down_up(server_host, server_user, server_pass, device)
+                print(f"Overall test: {'PASSED' if link_test_result else 'FAILED'}.")
+                print(f"\n===== Completed LLDP link down/up test for {device} =====\n")
 
-    # Run FEC test
-    if retry == 'y':
-        if input("\nRun FEC test (configure + verify)? (y/n): ").lower().strip() == 'y':
-            print("\nStarting FEC mode test on the selected interface...")
-            test_fec_modes(switch_shortname, server_user, server_pass, short_interface)
-        else:
-            print("Skipping FEC test.\n")
-
-    # Run AE Bundle test
-    if retry == 'y':
-        run_ae_test = input("\nRun AE Bundle test? (y/n): ").lower().strip()
-        if run_ae_test == 'y':
-            if not short_interface or not switch_user or not switch_pass:
-                print("Missing interface or switch credentials. Skipping AE Bundle test.\n")
-            else:
-                # Call the automation function using existing variables
-                success = test_ae_lacp_bundle(
-                    local_switch=switch_shortname,
-                    local_user=switch_user,
-                    local_pass=switch_pass,
-                    local_iface=short_interface
-                )
-                if success:
-                    print(f"\nCompleted AE Bundle + LACP Test on {short_interface} Successfully\n")
+            elif test_choice == 2:
+                if switch_user and switch_pass and port_descr:
+                    laser_on_off_test(switch_shortname, switch_user, switch_pass, short_interface)
+                    print("\n===== Completed Laser On/Off Test =====\n")
                 else:
-                    print(f"\nAE Bundle + LACP Test failed on {short_interface}.\n")
-        else:
-            print("Skipping AE Bundle test.\n")
+                    print("Missing switch credentials or port info. Cannot run Laser test.\n")
 
-    # Run channelization test
-    if retry == 'y':
-        if match:
-            interface_full = match.group(0)
-            interface_number = re.search(r'(\d+)(?::\d+)?$', interface_full).group(1)
-            if input("Run channelization test? Test time ~5 to 10 minutes (y/n): ").lower().strip() == 'y':
-                test_channelization(switch_shortname, switch_user, switch_pass, interface_full, interface_number)
-            else:
-                print("Skipping channelization test.\n")
-        else:
-            print(f"Failed to extract interface from port description: {port_descr}")
+            elif test_choice == 3:
+                soft_oir_all_ports(switch_sysname, switch_user, switch_pass)
+                print(f"\n===== Completed Soft OIR Test for all ports =====\n")
 
-    # Run traffic test
-    if retry == 'y':
-        traffic_test = input("Run traffic test? (y/n): ").strip().lower()
-        if traffic_test == 'y':
-            run_traffic_test(server_host, server_user, server_pass, device)
-        else:
-            print("Skipping traffic test.\n")
+            elif test_choice == 4:
+                print("\nStarting FEC mode test on the selected interface...")
+                test_fec_modes(switch_shortname, server_user, server_pass, short_interface)
+
+            elif test_choice == 5:
+                if not short_interface or not switch_user or not switch_pass:
+                    print("Missing interface or switch credentials. Skipping AE Bundle test.\n")
+                else:
+                    success = test_ae_lacp_bundle(
+                        local_switch=switch_shortname,
+                        local_user=switch_user,
+                        local_pass=switch_pass,
+                        local_iface=short_interface
+                    )
+                    if success:
+                        print(f"\nCompleted AE Bundle + LACP Test on {short_interface} Successfully\n")
+                    else:
+                        print(f"\nAE Bundle + LACP Test failed on {short_interface}.\n")
+
+            elif test_choice == 6:
+                if match:
+                    interface_full = match.group(0)
+                    interface_number = re.search(r'(\d+)(?::\d+)?$', interface_full).group(1)
+                    test_channelization(switch_shortname, switch_user, switch_pass, interface_full, interface_number)
+                else:
+                    print(f"Failed to extract interface from port description: {port_descr}")
+
+            elif test_choice == 7:
+                run_traffic_test(server_host, server_user, server_pass, device)
+
+            elif test_choice == 8:
+                print("\n=== Exiting program. ===")
+
 
     
     
