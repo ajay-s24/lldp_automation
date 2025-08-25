@@ -1,4 +1,4 @@
-# LLDP and NIC Diagnostics Script
+# Network Interface Test Automation Script
 
 ## Overview
 
