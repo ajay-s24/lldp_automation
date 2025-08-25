@@ -494,8 +494,23 @@ Cleaning up AE configuration...
 
 Completed AE Bundle + LACP Test on et-0/0/56 Successfully
 
-Run traffic test? (y/n): n
-Skipping traffic test.
+Run traffic test? (y/n): y
+
+=== Traffic Test for Device: enp13s0np0 ===
+Device enp13s0np0 IPv4: 10.200.10.29, IPv6: fe80::966d:aeff:fed4:6c46
+Copying ~/OSTG_KR from san-ft-ai-srv01 → svl-hp-ai-srv02 ...
+Running: ssh root@san-ft-ai-srv01 "sshpass -p 'Embe1mpls' scp -o StrictHostKeyChecking=no -r ~/OSTG_KR root@svl-d-ai-srv04:/root/"
+Copy successful!
+Starting server_ostg.py on remote server...
+Waiting 5 seconds for traffic server to start...
+Starting IPv4 traffic...
+IPv4 traffic test: PASSED (HTTP 200)
+Starting IPv6 traffic...
+IPv6 traffic test: PASSED (HTTP 200)
+
+Traffic test PASSED for both IPv4 and IPv6.
+
+===== Completed Traffic Test for enp13s0np0 =====
 
 
 Saving LLDP data before reboot...
