@@ -34,14 +34,18 @@ Note: The AE Bundle/LACP test currently only configures and verifies the local s
 
 ## Usage
 
-Run the script locally on your computer.
+1. Run the script locally on your computer.
+2. NIC match string:
+   - When prompted, enter the network interface hardware name or NIC vendor name. (e.g. enp13s0np0, MT28800 Family, etc.)
+   - Partial matches are allowed. (example: Entering "e" will list all NICs with an "e" in the name)
+   - If left blank (if you click enter without typing anything), the default "Broadcom Inc. and subsidiaries" is used as the NIC match string.
+   - All NICs under the match string will be displayed.
+3. If multiple interfaces match, a numbered list of interfaces will appear. Select the number corresponding to the interface to test.
+4. Users will be prompted for switch SSH credentials if the switch name and credentials are not in the creds.yaml file. (e.g. Switch User: root, Switch Pass: password123)
+5. Tests are optional and numbered, select the number corresponding to the test. Users can run as many tests as they like.
+6. After exiting the tests, you have the option to reboot the server for LLDP consistency testing. (type y or n)
 
-The script will prompt you to enter:
-1. NIC match string, could be network interface hardware name, NIC name, etc. (if left blank, uses default, which is "Broadcom Inc. and subsidiaries")
-2. If multiple interfaces match, select which interface to test
-3. Switch hostname/IP and SSH credentials (if credentials not in YAML file)
-4. Whether to run optional tests
-5. Whether to reboot the server for LLDP consistency testing
+Note: Look at example output for clarification.
 
 ## Major Functions
 
