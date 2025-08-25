@@ -301,10 +301,10 @@ def scp_with_ssh(src_host, dest_host, user, password):
         print(f"Running command on {src_host}...")
         output = run_ssh_command(src_host, user, password, scp_cmd)
         if output is not None:
-            print("Copy successful!")
+            print("Copy successful.")
             return True
         else:
-            print("Copy failed!")
+            print("Copy failed.")
             return False
     except Exception as e:
         print(f"Copy failed: {e}")
