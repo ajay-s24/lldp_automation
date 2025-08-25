@@ -60,7 +60,7 @@ The script will prompt you to enter:
   - test_channelization(): Tests various channelization modes by validating that sub-interfaces can be created and work properly at various lane/speed configurations
   - test_fec_modes(): Configures various FEC and checks interface status
   - test_ae_lacp_bundle() (switch-side only, needs server-side implementation): Configures AE bundle and enables LACP
-  - run_traffic_test(): Runs traffic test for ipv4 and ipv6
+  - run_traffic_test(): Runs traffic test for IPv4 and IPv6
 
 ## Example Output
 
