@@ -1495,6 +1495,7 @@ def main():
 
             elif test_choice == 8:
                 print("\n=== Exiting program. ===")
+                break
 
 
     
