@@ -10,7 +10,7 @@ This Python script runs locally on your computer and uses SSH to connect to remo
 - Validating physical connectivity with LLDP link down/up tests.
 - Optional network tests such as laser on/off, Soft OIR, channelization, FEC configuration, and AE Bundle/LACP.
   
-Note: The AE Bundle/LACP test only verifies the switch-side configuration, not the server-side bonding, server-side needs implementation.
+Note: The AE Bundle/LACP test currently only configures and verifies the local switch-side AE interface, including LACP and VLAN settings. It does not configure or validate the server-side bonding, and server-side implementation needs to be added separately.
 
 
 ## Features
