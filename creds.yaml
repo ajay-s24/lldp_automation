@@ -18,3 +18,30 @@ switches:
   - name: ny-q5130-04
   - name: ny-q5240-13
   - name: san-q5130e-04
+  - name: ny-q5130-01
+  - name: ny-q5130-04
+  - name: ny-q5200-03
+  - name: ny-q5220-01
+  - name: ny-q5220-02
+  - name: ny-q5220-03
+  - name: ny-q5220-06
+  - name: ny-q5220-09
+  - name: ny-q5220-10
+  - name: ny-q5220-11
+  - name: ny-q5220-13
+  - name: ny-q5230-01
+  - name: ny-q5230-02
+  - name: ny-q5230-06
+  - name: ny-q5230-08
+  - name: ny-q5230-09
+  - name: ny-q5240-q07
+  - name: ny-q5241-01
+  - name: ny-q5241-02
+  - name: ny-q5241-03
+  - name: ny-q5241-04
+  - name: ny-q5241-05
+  - name: san-q5110-01
+  - name: san-q5120-01
+  - name: san-q5120-02
+  - name: san-q5120-03
+  - name: san-q5130-01
