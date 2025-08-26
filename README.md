@@ -45,6 +45,8 @@ Note: Look at example output for clarification.
   - FEC mode test
   - AE Bundle/LACP test
   - Traffic test for IPv4 and IPv6
+    - Server_ostg.py is copied from san-ft-ai-srv01 to test server and automated to run
+    - Test server must be able to run this program to start server, or else test will fail
 - Server/Switch Login Handling: Can use stored credentials from a YAML file or prompt for credentials manually.
 
 ## Major Functions
