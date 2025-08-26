@@ -332,6 +332,10 @@ def run_traffic_test(server_host, server_user, server_pass, device,
     ipv6_addr = run_ssh_command(server_host, server_user, server_pass, ipv6_cmd).strip()
     print(f"Device {device} IPv4: {ipv4_addr or 'None'}, IPv6: {ipv6_addr or 'None'}")
 
+    if not ipv4_addr and not ipv6_addr:
+        print("No IP addresses found on device. Aborting traffic test.")
+        return
+
     # Step 1: Copy ~/OSTG_KR from src_host to server_host using sshpass on the source
     print(f"Copying ~/OSTG_KR from {src_host} to {server_host} ...")
     if not scp_with_ssh(src_host, server_host, src_user, src_pass):
@@ -341,13 +345,23 @@ def run_traffic_test(server_host, server_user, server_pass, device,
     # Step 2: Start server_ostg.py in background on remote server
     print("Starting server_ostg.py on remote server...")
     start_cmd = (
-    "bash -c 'cd ~/OSTG_KR && "
-    "source traffic-env/bin/activate && "
-    "python3 server_ostg.py > server_ostg.log 2>&1 &'"
-)
+        "bash -c 'cd ~/OSTG_KR && "
+        "source traffic-env/bin/activate && "
+        "python3 server_ostg.py > server_ostg.log 2>&1 &'"
+    )
     run_ssh_command(server_host, server_user, server_pass, start_cmd)
     print("Waiting 5 seconds for traffic server to start...")
     time.sleep(5)
+
+    # Check if process is running
+    check_cmd = "ps aux | grep '[s]erver_ostg.py'"
+    output = run_ssh_command(server_host, server_user, server_pass, check_cmd).strip()
+    if output:
+        print("server_ostg.py is running.")
+    else:
+        print("server_ostg.py is NOT running. Check server_ostg.log for errors.")
+        print(f"\n===== Completed Traffic Test for {device} =====\n")
+        return
 
     ipv4_passed = False
     ipv6_passed = False
