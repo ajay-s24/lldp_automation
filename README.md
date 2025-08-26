@@ -15,6 +15,8 @@ Note: The AE Bundle/LACP test currently only configures and verifies the local s
 ## Usage
 
 1. Run the script locally on your computer.
+   - Important: Make sure the files creds.yaml and nic_config.json are present in the same directory as the script.
+   - These files are required for the script to access server and switch credentials, as well as NIC information.
 2. NIC match string:
    - When prompted, enter the network interface hardware name or NIC vendor name. (e.g. enp13s0np0, MT28800 Family, etc.)
    - Partial matches are allowed. (example: Entering "e" will list all NICs with an "e" in the name)
